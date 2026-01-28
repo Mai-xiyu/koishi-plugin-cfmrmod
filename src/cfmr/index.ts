@@ -781,7 +781,7 @@ async function drawProjectCard(data) {
   footerY += 18;
   
   // 3. 绘制要求的作者署名
-  ctx.fillText('插件作者 Mai_xiyu（机器人作者 Mai_xiyu）', width / 2, footerY);
+  ctx.fillText('Plugin By Mai_xiyu', width / 2, footerY);
 
   return [canvas.toBuffer('image/png')];
 }
@@ -1074,7 +1074,7 @@ async function drawProjectCardCF(data) {
               ctx.font = `12px "${font}"`;
               ctx.textAlign = 'center';
               ctx.textBaseline = 'top';
-              ctx.fillText('插件作者 Mai_xiyu（机器人作者 Mai_xiyu）', rightX + sidebarW / 2, fy);
+              ctx.fillText('Plugin By Mai_xiyu', rightX + sidebarW / 2, fy);
               ctx.textAlign = 'left';
               
               ry += item.h;

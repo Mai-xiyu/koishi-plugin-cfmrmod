@@ -2000,7 +2000,7 @@ async function drawModCard(url) {
     
     // Footer
     ctx.fillStyle = '#999'; ctx.font = `12px "${font}"`; ctx.textAlign = 'center';
-    ctx.fillText('mcmod.cn & bbs.mcmod.cn | Powered by Koishi | Bot By Mai_xiyu', width / 2, totalHeight - 15);
+    ctx.fillText('mcmod.cn & bbs.mcmod.cn | Powered by Koishi | Plugin By Mai_xiyu', width / 2, totalHeight - 15);
 
     return canvas.toBuffer('image/png');
   }

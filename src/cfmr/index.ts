@@ -1,9 +1,20 @@
 const { Schema, h } = require('koishi');
-// 【修复】这里添加了 Path2D 的引入
-const { createCanvas, loadImage, Path2D, GlobalFonts } = require('@napi-rs/canvas');
 const fetch = require('node-fetch');
 const cheerio = require('cheerio');
 const { marked } = require('marked');
+let createCanvas;
+let loadImage;
+let Path2DRef;
+let registerFont;
+
+async function toImageSrc(input) {
+  const value = (input && typeof input.then === 'function') ? await input : input;
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  const buf = Buffer.isBuffer(value) ? value : (value instanceof Uint8Array ? Buffer.from(value) : null);
+  if (buf) return `data:image/png;base64,${buf.toString('base64')}`;
+  return String(value);
+}
 const CF_LOADER_MAP = {
   1: 'Forge',
   2: 'Cauldron',
@@ -562,10 +573,10 @@ async function drawProjectCard(data) {
   // Stats & Tags Row
   // Downloads Icon
   const drawIcon = (path, x, y) => {
+    if (!Path2DRef) return;
     ctx.save(); ctx.translate(x, y); ctx.scale(0.8, 0.8);
     ctx.strokeStyle = COLORS.textSec; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    // Path2D 需要引入
-    const p = new Path2D(path); ctx.stroke(p); ctx.restore();
+    const p = new Path2DRef(path); ctx.stroke(p); ctx.restore();
   };
   
   let sx = hTx;
@@ -1509,15 +1520,24 @@ async function searchCurseForge(query, type, apiKey, timeout, gameId = 432) {
 // ================= Apply =================
 export function apply(ctx, config) {
   const logger = ctx.logger('mc-search');
-  if (config.fontPath) {
-    try {
-      const ok = GlobalFonts.registerFromPath(config.fontPath, 'KoishiFont');
-      if (ok) GLOBAL_FONT_FAMILY = 'KoishiFont';
-      else logger.warn('字体加载失败: registerFromPath 返回 false');
-    } catch (e) {
-      logger.warn('字体加载失败: ' + e.message);
-    }
+  const skia = ctx.skia;
+  if (!skia?.Canvas || !skia?.loadImage) {
+    throw new Error('缺少 skia 服务，请先启用 @ltxhhz/koishi-plugin-skia-canvas');
   }
+  createCanvas = (w, h) => {
+    const c = new skia.Canvas(w || 0, h || 0);
+    if (!c || typeof c.getContext !== 'function') {
+      throw new Error('skia 服务异常：Canvas 无效，请确认使用 @ltxhhz/koishi-plugin-skia-canvas');
+    }
+    return c;
+  };
+  loadImage = skia.loadImage;
+  registerFont = (path, options) => {
+    if (skia.FontLibrary?.use) skia.FontLibrary.use(path, options?.family);
+  };
+  Path2DRef = skia.Path2D || globalThis.Path2D;
+
+  // 取消自定义字体配置，使用 skia 默认字体
 
   const states = new Map();
   const normalizeMessageIds = (res) => {
@@ -1570,7 +1590,7 @@ export function apply(ctx, config) {
                 maxCanvasHeight: config.maxCanvasHeight || 8000
               });
           for (const buf of imgBufs) {
-            await session.send(h.image(buf, 'image/png'));
+            await session.send(h.image(await toImageSrc(buf)));
           }
           if (config.sendLink) await session.send(`链接: ${detailData.url}`);
         } catch(e) { logger.error(e); return session.send(`生成失败: ${e.message}`); }
@@ -1622,7 +1642,7 @@ export function apply(ctx, config) {
                         maxCanvasHeight: config.maxCanvasHeight || 8000
                       });
                   for (const buf of imgBufs) {
-                    await session.send(h.image(buf, 'image/png'));
+                    await session.send(h.image(await toImageSrc(buf)));
                   }
                   if (config.sendLink) await session.send(`链接: ${detailData.url}`);
               } catch(e) { logger.error(e); return session.send(`生成失败: ${e.message}`); }

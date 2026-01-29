@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-cfmrmod",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Koishi 插件：搜索 CurseForge/Modrinth/MCMod 并渲染图片卡片",
   "main": "dist/index.js",
   "files": [
@@ -55,7 +55,7 @@
       "zh": "从 CurseForge/Modrinth/MCMod 搜索模组/整合包/光影等内容，并生成图片卡片。"
     },
     "service": {
-      "required": ["skia"]
+      "required": ["skia", "database"]
     }
   }
 }

@@ -6,8 +6,21 @@ const fetch = require('node-fetch');
 const cheerio = require('cheerio');
 const fs = require('fs');
 const path = require('path');
-const { createCanvas, loadImage, registerFont, GlobalFonts } = require('@napi-rs/canvas');
 const { h, Schema } = require('koishi');
+let createCanvas;
+let loadImage;
+let registerFont;
+async function toImageSrc(input) {
+    const value = (input && typeof input.then === 'function') ? await input : input;
+    if (!value)
+        return '';
+    if (typeof value === 'string')
+        return value;
+    const buf = Buffer.isBuffer(value) ? value : (value instanceof Uint8Array ? Buffer.from(value) : null);
+    if (buf)
+        return `data:image/png;base64,${buf.toString('base64')}`;
+    return String(value);
+}
 // Cookie 管理器
 let cookieManager = null;
 try {
@@ -139,13 +152,14 @@ function wrapText(ctx, text, x, y, maxWidth, lineHeight, maxLines = 1000, draw =
     return currentY + lineHeight;
 }
 // ================= 字体注册 =================
-function initFont(preferredPath, logger) {
+function initFont(preferredPath, logger, registerFontFn) {
     const fontName = 'MCModFont';
     const tryRegister = (filePath, source) => {
         if (!fs.existsSync(filePath))
             return false;
         try {
-            if (GlobalFonts.registerFromPath(filePath, fontName)) {
+            if (registerFontFn) {
+                registerFontFn(filePath, { family: fontName });
                 GLOBAL_FONT_FAMILY = fontName;
                 logger.info(`[Font] 成功加载${source}: ${filePath}`);
                 return true;
@@ -2165,7 +2179,7 @@ async function drawCenterCardImpl(uid, logger) {
     ctx.fillStyle = '#999';
     ctx.font = `12px "${font}"`;
     ctx.textAlign = 'center';
-    ctx.fillText('mcmod.cn & bbs.mcmod.cn | Powered by Koishi | Bot By Mai_xiyu', width / 2, totalHeight - 15);
+    ctx.fillText('mcmod.cn & bbs.mcmod.cn | Powered by Koishi | Plugin By Mai_xiyu', width / 2, totalHeight - 15);
     return canvas.toBuffer('image/png');
 }
 // ================= 详情页卡片 =================
@@ -2433,7 +2447,24 @@ exports.Config = Schema.object({
 function apply(ctx, config) {
     var _a;
     const logger = ctx.logger('mcmod');
-    if (!initFont(config.fontPath, logger)) { }
+    const skia = ctx.skia;
+    if (!(skia === null || skia === void 0 ? void 0 : skia.Canvas) || !(skia === null || skia === void 0 ? void 0 : skia.loadImage)) {
+        throw new Error('缺少 skia 服务，请先启用 @ltxhhz/koishi-plugin-skia-canvas');
+    }
+    createCanvas = (w, h) => {
+        const c = new skia.Canvas(w || 0, h || 0);
+        if (!c || typeof c.getContext !== 'function') {
+            throw new Error('skia 服务异常：Canvas 无效，请确认使用 @ltxhhz/koishi-plugin-skia-canvas');
+        }
+        return c;
+    };
+    loadImage = skia.loadImage;
+    registerFont = (path, options) => {
+        var _a;
+        if ((_a = skia.FontLibrary) === null || _a === void 0 ? void 0 : _a.use)
+            skia.FontLibrary.use(path, options === null || options === void 0 ? void 0 : options.family);
+    };
+    // 取消自定义字体配置，使用 skia 默认字体
     // 初始化 Cookie
     if (config.cookie) {
         globalCookie = config.cookie;
@@ -2563,7 +2594,7 @@ function apply(ctx, config) {
                             img = await drawTutorialCard(item.link);
                         else
                             img = await createInfoCard(item.link, type);
-                        await session.send(h.image(img, 'image/png'));
+                        await session.send(h.image(await toImageSrc(img)));
                         if (config.sendLink)
                             await session.send(`链接: ${item.link}`);
                         return;
@@ -2612,7 +2643,7 @@ function apply(ctx, config) {
                     const item = results[0];
                     await ensureValidCookie();
                     const img = await drawModCard(item.link);
-                    await session.send(h.image(img, 'image/png'));
+                    await session.send(h.image(await toImageSrc(img)));
                     if (config.sendLink)
                         await session.send(`链接: ${item.link}`);
                     return;
@@ -2716,7 +2747,7 @@ function apply(ctx, config) {
                             img = await drawTutorialCard(item.link);
                         else
                             img = await createInfoCard(item.link, currentState.type);
-                        await session.send(h.image(img, 'image/png'));
+                        await session.send(h.image(await toImageSrc(img)));
                         if (config.sendLink)
                             await session.send(`链接: ${item.link}`);
                     }

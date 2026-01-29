@@ -244,7 +244,37 @@ function apply(ctx, config, options) {
         stateCache.set(key, { lastVersion });
         await saveStateToFile();
     };
-    const getConfigGroups = () => Array.isArray(config.groups) ? config.groups : [];
+    const getConfigGroups = () => {
+        if (!Array.isArray(config.groups))
+            config.groups = [];
+        return config.groups;
+    };
+    const getGroup = (channelId) => {
+        return getConfigGroups().find((g) => String(g === null || g === void 0 ? void 0 : g.channelId) === String(channelId));
+    };
+    const ensureGroup = (channelId) => {
+        const groups = getConfigGroups();
+        let group = groups.find((g) => String(g === null || g === void 0 ? void 0 : g.channelId) === String(channelId));
+        if (!group) {
+            group = { channelId: String(channelId), enabled: true, subs: [] };
+            groups.push(group);
+        }
+        if (typeof group.enabled !== 'boolean')
+            group.enabled = true;
+        if (!Array.isArray(group.subs))
+            group.subs = [];
+        return group;
+    };
+    const parseOnOff = (value) => {
+        if (typeof value !== 'string')
+            return null;
+        const v = value.trim().toLowerCase();
+        if (['1', 'on', 'true', 'yes', 'y'].includes(v))
+            return true;
+        if (['0', 'off', 'false', 'no', 'n'].includes(v))
+            return false;
+        return null;
+    };
     const getConfigSubs = (channelId) => {
         const groups = getConfigGroups();
         const subs = [];
@@ -442,48 +472,109 @@ function apply(ctx, config, options) {
         const tick = Math.max(60 * 1000, Number(config.interval) || 30 * 60 * 1000);
         ctx.setInterval(() => checkOnce().catch(() => null), tick);
     }
-    ctx.command('notify.add <platform> <projectId> [channelId]', '添加更新订阅')
-        .action(async ({ session }, platform, projectId, channelId) => {
+    ctx.command('notify.add <platform> <projectId>', '添加更新订阅')
+        .action(async ({ session }, platform, projectId) => {
         if (!platform || !projectId)
             return '参数不足。';
-        const targetChannel = channelId || session.channelId;
+        const platformKey = normalizePlatform(platform);
+        if (!platformKey)
+            return '平台参数错误，请使用 mr 或 cf。';
+        const targetChannel = session.channelId;
         if (!targetChannel)
             return '只能在群聊使用或指定 channelId。';
-        if (!await requireManage(session, channelId))
+        if (!await requireManage(session))
             return '权限不足。';
-        return '请在配置页面的 notify.groups 中编辑订阅列表。';
+        const pid = String(projectId).trim();
+        if (!pid)
+            return '项目 ID 不能为空。';
+        const group = ensureGroup(targetChannel);
+        const list = Array.isArray(group.subs) ? group.subs : [];
+        const exists = list.some((s) => normalizePlatform(s === null || s === void 0 ? void 0 : s.platform) === platformKey && String((s === null || s === void 0 ? void 0 : s.projectId) || '').trim() === pid);
+        if (exists)
+            return `已存在订阅：${platformKey}:${pid}`;
+        const interval = Math.max(60 * 1000, Number(config.interval) || 30 * 60 * 1000);
+        list.push({ platform: platformKey, projectId: pid, interval });
+        group.subs = list;
+        return `已添加订阅：${platformKey}:${pid}`;
     });
-    ctx.command('notify.remove <platform> <projectId> [channelId]', '删除更新订阅')
-        .action(async ({ session }, platform, projectId, channelId) => {
+    ctx.command('notify.remove <platform> <projectId>', '删除更新订阅')
+        .action(async ({ session }, platform, projectId) => {
         if (!platform || !projectId)
             return '参数不足。';
-        const targetChannel = channelId || session.channelId;
+        const platformKey = normalizePlatform(platform);
+        if (!platformKey)
+            return '平台参数错误，请使用 mr 或 cf。';
+        const targetChannel = session.channelId;
         if (!targetChannel)
             return '只能在群聊使用或指定 channelId。';
-        if (!await requireManage(session, channelId))
+        if (!await requireManage(session))
             return '权限不足。';
-        return '请在配置页面的 notify.groups 中编辑订阅列表。';
+        const pid = String(projectId).trim();
+        if (!pid)
+            return '项目 ID 不能为空。';
+        const group = getGroup(targetChannel);
+        if (!group || !Array.isArray(group.subs) || !group.subs.length)
+            return '未找到订阅。';
+        const before = group.subs.length;
+        group.subs = group.subs.filter((s) => !(normalizePlatform(s === null || s === void 0 ? void 0 : s.platform) === platformKey && String((s === null || s === void 0 ? void 0 : s.projectId) || '').trim() === pid));
+        if (group.subs.length === before)
+            return '未找到订阅。';
+        return `已删除订阅：${platformKey}:${pid}`;
     });
-    ctx.command('notify.list [channelId]', '列出订阅')
-        .action(async ({ session }, channelId) => {
-        const targetChannel = channelId || session.channelId;
+    ctx.command('notify.list', '列出订阅')
+        .action(async ({ session }) => {
+        const targetChannel = session.channelId;
         if (!targetChannel)
             return '只能在群聊使用或指定 channelId。';
-        if (!await requireManage(session, channelId))
+        if (!await requireManage(session))
             return '权限不足。';
-        const subs = getConfigSubs(targetChannel);
-        if (!subs.length)
+        const group = getGroup(targetChannel);
+        if (!group)
             return '暂无订阅。';
-        return subs.map(s => `- ${s.platform}:${s.projectId} (${Math.round(s.interval / 60000)} 分钟)`).join('\n');
+        const list = Array.isArray(group.subs) ? group.subs : [];
+        if (!list.length)
+            return group.enabled === false ? '本群通知已禁用，暂无订阅。' : '暂无订阅。';
+        const status = group.enabled === false ? '禁用' : '启用';
+        const lines = list.map((s, i) => {
+            const platformKey = normalizePlatform(s === null || s === void 0 ? void 0 : s.platform) || String((s === null || s === void 0 ? void 0 : s.platform) || '').trim();
+            const pid = String((s === null || s === void 0 ? void 0 : s.projectId) || '').trim();
+            const rawInterval = Number(s === null || s === void 0 ? void 0 : s.interval);
+            const interval = Math.max(60 * 1000, rawInterval || Number(config.interval) || 30 * 60 * 1000);
+            return `${i + 1}. ${platformKey}:${pid} (${Math.round(interval / 60000)} 分钟)`;
+        });
+        return [`本群通知：${status}`, ...lines].join('\n');
     });
-    ctx.command('notify.enable <onoff> [channelId]', '启用/禁用本群通知')
-        .action(async ({ session }, onoff, channelId) => {
-        const targetChannel = channelId || session.channelId;
+    ctx.command('notify.enable <onoff>', '启用/禁用本群通知')
+        .action(async ({ session }, onoff) => {
+        const targetChannel = session.channelId;
         if (!targetChannel)
             return '只能在群聊使用或指定 channelId。';
-        if (!await requireManage(session, channelId))
+        if (!await requireManage(session))
             return '权限不足。';
-        return '请在配置页面的 notify.groups 中编辑 enabled。';
+        const flag = parseOnOff(onoff);
+        if (flag === null)
+            return 'onoff 参数错误，请使用 on/off 或 true/false。';
+        const group = ensureGroup(targetChannel);
+        group.enabled = flag;
+        return flag ? '已启用本群通知。' : '已禁用本群通知。';
+    });
+    ctx.command('notify.helpme', '查看通知系统帮助')
+        .action(() => {
+        return [
+            'notify 使用说明：',
+            '1) notify.add ［platform］ ［projectId］  添加订阅',
+            '2) notify.remove ［platform］ ［projectId］ 删除订阅',
+            '3) notify.list  列出订阅',
+            '4) notify.enable ［onoff］ 启用/禁用',
+            '5) notify.check [arg] [-b] 手动检查更新（arg 为序号或 projectId）',
+            '平台：mr=Modrinth，cf=CurseForge',
+            '参数说明：',
+            '- ［platform］：平台代码，填写 mr 或 cf',
+            '- ［projectId］：平台项目ID（Modrinth/CurseForge 的项目ID，不是名称）',
+            '- ［onoff］：启用开关，填写 on/off 或 true/false',
+            '- [arg]：notify.check 的参数，可填订阅序号或 projectId',
+            '- -b：强制发送最新卡片（忽略是否更新）',
+        ].join('\n');
     });
     ctx.command('notify.check [arg]', '手动检查更新')
         .option('broadcast', '-b 直接发送最新版卡片（忽略是否更新）')

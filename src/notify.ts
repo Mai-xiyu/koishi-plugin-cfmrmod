@@ -440,14 +440,14 @@ export function apply(ctx: Context, config: any, options: { cfmr: any }) {
     ctx.setInterval(() => checkOnce().catch(() => null), tick);
   }
 
-  ctx.command('notify.add <platform> <projectId> [channelId]', '添加更新订阅')
-    .action(async ({ session }, platform, projectId, channelId) => {
+  ctx.command('notify.add <platform> <projectId>', '添加更新订阅')
+    .action(async ({ session }, platform, projectId) => {
       if (!platform || !projectId) return '参数不足。';
       const platformKey = normalizePlatform(platform);
       if (!platformKey) return '平台参数错误，请使用 mr 或 cf。';
-      const targetChannel = channelId || session.channelId;
+      const targetChannel = session.channelId;
       if (!targetChannel) return '只能在群聊使用或指定 channelId。';
-      if (!await requireManage(session, channelId)) return '权限不足。';
+      if (!await requireManage(session)) return '权限不足。';
       const pid = String(projectId).trim();
       if (!pid) return '项目 ID 不能为空。';
       const group = ensureGroup(targetChannel);
@@ -460,14 +460,14 @@ export function apply(ctx: Context, config: any, options: { cfmr: any }) {
       return `已添加订阅：${platformKey}:${pid}`;
     });
 
-  ctx.command('notify.remove <platform> <projectId> [channelId]', '删除更新订阅')
-    .action(async ({ session }, platform, projectId, channelId) => {
+  ctx.command('notify.remove <platform> <projectId>', '删除更新订阅')
+    .action(async ({ session }, platform, projectId) => {
       if (!platform || !projectId) return '参数不足。';
       const platformKey = normalizePlatform(platform);
       if (!platformKey) return '平台参数错误，请使用 mr 或 cf。';
-      const targetChannel = channelId || session.channelId;
+      const targetChannel = session.channelId;
       if (!targetChannel) return '只能在群聊使用或指定 channelId。';
-      if (!await requireManage(session, channelId)) return '权限不足。';
+      if (!await requireManage(session)) return '权限不足。';
       const pid = String(projectId).trim();
       if (!pid) return '项目 ID 不能为空。';
       const group = getGroup(targetChannel);
@@ -478,11 +478,11 @@ export function apply(ctx: Context, config: any, options: { cfmr: any }) {
       return `已删除订阅：${platformKey}:${pid}`;
     });
 
-  ctx.command('notify.list [channelId]', '列出订阅')
-    .action(async ({ session }, channelId) => {
-      const targetChannel = channelId || session.channelId;
+  ctx.command('notify.list', '列出订阅')
+    .action(async ({ session }) => {
+      const targetChannel = session.channelId;
       if (!targetChannel) return '只能在群聊使用或指定 channelId。';
-      if (!await requireManage(session, channelId)) return '权限不足。';
+      if (!await requireManage(session)) return '权限不足。';
       const group = getGroup(targetChannel);
       if (!group) return '暂无订阅。';
       const list = Array.isArray(group.subs) ? group.subs : [];
@@ -498,11 +498,11 @@ export function apply(ctx: Context, config: any, options: { cfmr: any }) {
       return [`本群通知：${status}`, ...lines].join('\n');
     });
 
-  ctx.command('notify.enable <onoff> [channelId]', '启用/禁用本群通知')
-    .action(async ({ session }, onoff, channelId) => {
-      const targetChannel = channelId || session.channelId;
+  ctx.command('notify.enable <onoff>', '启用/禁用本群通知')
+    .action(async ({ session }, onoff) => {
+      const targetChannel = session.channelId;
       if (!targetChannel) return '只能在群聊使用或指定 channelId。';
-      if (!await requireManage(session, channelId)) return '权限不足。';
+      if (!await requireManage(session)) return '权限不足。';
       const flag = parseOnOff(onoff);
       if (flag === null) return 'onoff 参数错误，请使用 on/off 或 true/false。';
       const group = ensureGroup(targetChannel);
@@ -510,21 +510,20 @@ export function apply(ctx: Context, config: any, options: { cfmr: any }) {
       return flag ? '已启用本群通知。' : '已禁用本群通知。';
     });
 
-  ctx.command('notify.help', '查看通知系统帮助')
+  ctx.command('notify.helpme', '查看通知系统帮助')
     .action(() => {
       return [
         'notify 使用说明：',
-        '1) notify.add <platform> <projectId> [channelId]  添加订阅',
-        '2) notify.remove <platform> <projectId> [channelId] 删除订阅',
-        '3) notify.list [channelId]  列出订阅',
-        '4) notify.enable <onoff> [channelId] 启用/禁用',
+        '1) notify.add ［platform］ ［projectId］  添加订阅',
+        '2) notify.remove ［platform］ ［projectId］ 删除订阅',
+        '3) notify.list  列出订阅',
+        '4) notify.enable ［onoff］ 启用/禁用',
         '5) notify.check [arg] [-b] 手动检查更新（arg 为序号或 projectId）',
         '平台：mr=Modrinth，cf=CurseForge',
         '参数说明：',
-        '- <platform>：平台代码，填写 mr 或 cf',
-        '- <projectId>：平台项目ID（Modrinth/CurseForge 的项目ID，不是名称）',
-        '- [channelId]：可选，目标频道ID，格式 platform:channelId（如 onebot:123456）',
-        '- <onoff>：启用开关，填写 on/off 或 true/false',
+        '- ［platform］：平台代码，填写 mr 或 cf',
+        '- ［projectId］：平台项目ID（Modrinth/CurseForge 的项目ID，不是名称）',
+        '- ［onoff］：启用开关，填写 on/off 或 true/false',
         '- [arg]：notify.check 的参数，可填订阅序号或 projectId',
         '- -b：强制发送最新卡片（忽略是否更新）',
       ].join('\n');

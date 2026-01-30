@@ -17,6 +17,7 @@ export const Config = Schema.object({
     interval: Schema.number().default(30 * 60 * 1000).description('轮询间隔(ms)，默认 30 分钟'),
     adminAuthority: Schema.number().default(3).description('机器人管理员权限等级(默认 3)'),
     stateFile: Schema.string().default('data/cfmrmod_notify_state.json').description('状态存储 JSON 路径（数据库不可用时使用）'),
+    configFile: Schema.string().default('data/cfmrmod_notify_config.json').description('订阅配置存储 JSON 路径（指令修改会写入）'),
     groups: Schema.array(Schema.object({
       channelId: Schema.string().description('群号/频道 ID'),
       enabled: Schema.boolean().default(true).description('是否启用本群通知'),

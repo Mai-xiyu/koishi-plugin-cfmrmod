@@ -41,6 +41,7 @@ Koishi 插件：搜索 CurseForge / Modrinth / MCMod，并渲染图片卡片。
 - `notify.interval`: 全局轮询间隔（毫秒）
 - `notify.adminAuthority`: 权限等级（1=全部，2=管理员+群主，3=仅群主）
 - `notify.stateFile`: 状态文件路径（JSON）
+- `notify.configFile`: 订阅配置文件路径（JSON，指令修改会写入）
 - `notify.groups`: 通知群组列表
 	- `channelId`: 群/频道 ID
 	- `enabled`: 是否启用本群通知

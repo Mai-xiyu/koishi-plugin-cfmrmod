@@ -183,12 +183,55 @@ function apply(ctx, config, options) {
     let stateLoaded = false;
     let saving = false;
     let dbWarned = false;
+    let configLoaded = false;
     const getStateKey = (channelId, platform, projectId) => {
         return `${channelId}|${platform}|${projectId}`;
     };
     const resolveStateFile = () => {
         const p = String(config.stateFile || 'data/cfmrmod_notify_state.json');
         return path_1.default.isAbsolute(p) ? p : path_1.default.resolve(process.cwd(), p);
+    };
+    const resolveConfigFile = () => {
+        const p = String(config.configFile || 'data/cfmrmod_notify_config.json');
+        return path_1.default.isAbsolute(p) ? p : path_1.default.resolve(process.cwd(), p);
+    };
+    const loadConfigFromFile = async () => {
+        if (configLoaded)
+            return;
+        configLoaded = true;
+        try {
+            const filePath = resolveConfigFile();
+            const content = await fs_1.promises.readFile(filePath, 'utf8');
+            const json = JSON.parse(content);
+            if (json && typeof json === 'object') {
+                if (typeof json.enabled === 'boolean')
+                    config.enabled = json.enabled;
+                if (Array.isArray(json.groups))
+                    config.groups = json.groups;
+            }
+            if (!Array.isArray(config.groups))
+                config.groups = [];
+        }
+        catch {
+            if (!Array.isArray(config.groups))
+                config.groups = [];
+            if (config.groups.length)
+                await saveConfigToFile();
+        }
+    };
+    const saveConfigToFile = async () => {
+        try {
+            const filePath = resolveConfigFile();
+            await fs_1.promises.mkdir(path_1.default.dirname(filePath), { recursive: true });
+            const obj = {
+                enabled: !!config.enabled,
+                groups: Array.isArray(config.groups) ? config.groups : [],
+            };
+            await fs_1.promises.writeFile(filePath, JSON.stringify(obj, null, 2), 'utf8');
+        }
+        catch (e) {
+            logger.warn(`配置文件写入失败：${e.message}`);
+        }
     };
     const loadStateFromFile = async () => {
         if (stateLoaded)
@@ -387,6 +430,7 @@ function apply(ctx, config, options) {
     }
     async function checkOnce(channelId, force = false) {
         var _a;
+        await loadConfigFromFile();
         if (!config.enabled)
             return;
         const subs = getConfigSubs(channelId);
@@ -437,6 +481,7 @@ function apply(ctx, config, options) {
     }
     const checkOne = async (sub, forceSendAll) => {
         var _a;
+        await loadConfigFromFile();
         const timeout = ((_a = options === null || options === void 0 ? void 0 : options.cfmr) === null || _a === void 0 ? void 0 : _a.requestTimeout) || 15000;
         const latest = sub.platform === 'mr'
             ? await getLatestModrinth(sub.projectId, timeout)
@@ -474,6 +519,7 @@ function apply(ctx, config, options) {
     }
     ctx.command('notify.add <platform> <projectId>', '添加更新订阅')
         .action(async ({ session }, platform, projectId) => {
+        await loadConfigFromFile();
         if (!platform || !projectId)
             return '参数不足。';
         const platformKey = normalizePlatform(platform);
@@ -495,10 +541,12 @@ function apply(ctx, config, options) {
         const interval = Math.max(60 * 1000, Number(config.interval) || 30 * 60 * 1000);
         list.push({ platform: platformKey, projectId: pid, interval });
         group.subs = list;
+        await saveConfigToFile();
         return `已添加订阅：${platformKey}:${pid}`;
     });
     ctx.command('notify.remove <platform> <projectId>', '删除更新订阅')
         .action(async ({ session }, platform, projectId) => {
+        await loadConfigFromFile();
         if (!platform || !projectId)
             return '参数不足。';
         const platformKey = normalizePlatform(platform);
@@ -519,10 +567,12 @@ function apply(ctx, config, options) {
         group.subs = group.subs.filter((s) => !(normalizePlatform(s === null || s === void 0 ? void 0 : s.platform) === platformKey && String((s === null || s === void 0 ? void 0 : s.projectId) || '').trim() === pid));
         if (group.subs.length === before)
             return '未找到订阅。';
+        await saveConfigToFile();
         return `已删除订阅：${platformKey}:${pid}`;
     });
     ctx.command('notify.list', '列出订阅')
         .action(async ({ session }) => {
+        await loadConfigFromFile();
         const targetChannel = session.channelId;
         if (!targetChannel)
             return '只能在群聊使用或指定 channelId。';
@@ -546,6 +596,7 @@ function apply(ctx, config, options) {
     });
     ctx.command('notify.enable <onoff>', '启用/禁用本群通知')
         .action(async ({ session }, onoff) => {
+        await loadConfigFromFile();
         const targetChannel = session.channelId;
         if (!targetChannel)
             return '只能在群聊使用或指定 channelId。';
@@ -556,6 +607,7 @@ function apply(ctx, config, options) {
             return 'onoff 参数错误，请使用 on/off 或 true/false。';
         const group = ensureGroup(targetChannel);
         group.enabled = flag;
+        await saveConfigToFile();
         return flag ? '已启用本群通知。' : '已禁用本群通知。';
     });
     ctx.command('notify.helpme', '查看通知系统帮助')
@@ -579,6 +631,7 @@ function apply(ctx, config, options) {
     ctx.command('notify.check [arg]', '手动检查更新')
         .option('broadcast', '-b 直接发送最新版卡片（忽略是否更新）')
         .action(async ({ session, options }, arg) => {
+        await loadConfigFromFile();
         const targetChannel = session.channelId;
         if (!targetChannel)
             return '只能在群聊使用或指定 channelId。';

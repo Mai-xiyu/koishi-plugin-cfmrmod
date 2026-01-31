@@ -1,7 +1,8 @@
 # koishi-plugin-cfmrmod
 
 Koishi 插件：搜索 CurseForge / Modrinth / MCMod，并渲染图片卡片。
-兄弟给个star吧
+哥给个star吧
+Star就是我维护的动力🤤
 
 ## 使用方法
 

@@ -2653,7 +2653,7 @@ function apply(ctx, config) {
                 const sentMessageIds = await session.send(listText);
                 searchStates.set(session.cid, {
                     results,
-                    page: 0,
+                    pageIndex: 0,
                     type: 'mod',
                     messageIds: Array.isArray(sentMessageIds) ? sentMessageIds : [sentMessageIds],
                     timer: setTimeout(() => {
@@ -2686,6 +2686,7 @@ function apply(ctx, config) {
         if (input === 'p' || input === 'n') {
             // 加入队列处理翻页，防止并发
             enqueue(session, 'page-turn', async () => {
+                var _a, _b;
                 // 重新获取状态，防止排队期间状态丢失
                 const currentState = searchStates.get(session.cid);
                 if (!currentState)
@@ -2693,10 +2694,11 @@ function apply(ctx, config) {
                 clearTimeout(currentState.timer);
                 currentState.timer = setTimeout(() => searchStates.delete(session.cid), TIMEOUT_MS);
                 const total = Math.ceil(currentState.results.length / PAGE_SIZE);
-                let newIndex = currentState.pageIndex;
-                if (input === 'n' && currentState.pageIndex < total - 1)
+                const currentPage = Number((_b = (_a = currentState.pageIndex) !== null && _a !== void 0 ? _a : currentState.page) !== null && _b !== void 0 ? _b : 0) || 0;
+                let newIndex = currentPage;
+                if (input === 'n' && currentPage < total - 1)
                     newIndex++;
-                else if (input === 'p' && currentState.pageIndex > 0)
+                else if (input === 'p' && currentPage > 0)
                     newIndex--;
                 else {
                     await session.send('没有更多页面了。');
@@ -2705,8 +2707,8 @@ function apply(ctx, config) {
                 // 撤回旧列表（可选，为了整洁）
                 await tryWithdraw(session, currentState.messageIds);
                 currentState.pageIndex = newIndex;
-                const newMsgIds = await session.send(formatListPage(currentState.results, currentState.pageIndex, currentState.type));
-                currentState.messageIds = newMsgIds;
+                const newMsgIds = await session.send(formatListPage(currentState.results, newIndex, currentState.type));
+                currentState.messageIds = Array.isArray(newMsgIds) ? newMsgIds : [newMsgIds];
             });
             return;
         }
@@ -2715,12 +2717,13 @@ function apply(ctx, config) {
         if (!isNaN(choice) && choice >= 1) {
             // 加入队列处理生成卡片
             enqueue(session, 'select-item', async () => {
-                var _a;
+                var _a, _b, _c;
                 const currentState = searchStates.get(session.cid);
                 if (!currentState)
                     return; // 状态可能已过期
                 const idx = choice - 1;
-                const pageStart = currentState.pageIndex * PAGE_SIZE;
+                const currentPage = Number((_b = (_a = currentState.pageIndex) !== null && _a !== void 0 ? _a : currentState.page) !== null && _b !== void 0 ? _b : 0) || 0;
+                const pageStart = currentPage * PAGE_SIZE;
                 const pageEnd = Math.min(pageStart + PAGE_SIZE, currentState.results.length);
                 if (choice < pageStart + 1 || choice > pageEnd) {
                     // 如果序号不在当前页，忽略或提示
@@ -2738,7 +2741,7 @@ function apply(ctx, config) {
                         if (currentState.type === 'author')
                             img = await drawAuthorCard(item.link);
                         else if (currentState.type === 'user') {
-                            const uid = ((_a = item.link.match(/\/(\d+)(?:\.html|\/)?$/)) === null || _a === void 0 ? void 0 : _a[1]) || '0';
+                            const uid = ((_c = item.link.match(/\/(\d+)(?:\.html|\/)?$/)) === null || _c === void 0 ? void 0 : _c[1]) || '0';
                             img = await drawCenterCardImpl(uid, logger);
                         }
                         else if (currentState.type === 'mod' || currentState.type === 'pack')

@@ -1942,6 +1942,28 @@ export async function fetchCurseForgeDetail(id, apiKey, timeout, cfUrl = null) {
 
 // 搜索入口 (MR)
 async function searchModrinth(query, type, timeout) {
+    // 先尝试直接通过ID/slug获取项目详情
+    try {
+        const project = await fetchJson(`${MR_BASE}/project/${encodeURIComponent(query)}`, {}, timeout);
+        if (project && project.slug) {
+            // 成功获取到项目,返回单个结果
+            return [{
+                platform: 'Modrinth',
+                id: project.slug,
+                name: project.title,
+                author: project.author || 'Unknown',
+                summary: project.description,
+                type,
+                icon: project.icon_url,
+                downloads: project.downloads || 0,
+                updated: new Date(project.updated || project.published).toLocaleDateString()
+            }];
+        }
+    } catch (e) {
+        // ID/slug获取失败,继续使用搜索API
+    }
+    
+    // 使用搜索API
     const facet = MR_FACET_MAP[type];
     const url = `${MR_BASE}/search?query=${encodeURIComponent(query)}&facets=[["${facet}"]]&limit=20`;
     const json = await fetchJson(url, {}, timeout);
@@ -2075,13 +2097,13 @@ export function apply(ctx, config) {
   };
 
   const handleSearch = async (session, platform, type, keyword) => {
-      if (!keyword) return session.send('请输入关键词');
+      if (!keyword) { await session.send('请输入关键词'); return; }
       let results = [];
       try {
         if (platform === 'mr') results = await searchModrinth(keyword, type, config.requestTimeout);
         else results = await searchCurseForge(keyword, type, config.curseforgeApiKey, config.requestTimeout, config.curseforgeGameId);
-      } catch(e) { return session.send(`搜索出错: ${e.message}`); }
-      if (!results.length) return session.send('未找到结果');
+      } catch(e) { await session.send(`搜索出错: ${e.message}`); return; }
+      if (!results.length) { await session.send('未找到结果'); return; }
       if (results.length === 1) {
         const item = results[0];
         try {

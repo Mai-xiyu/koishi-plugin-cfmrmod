@@ -2491,7 +2491,7 @@ export function apply(ctx, config) {
 
             searchStates.set(session.cid, {
                 results,
-                page: 0,
+              pageIndex: 0,
                 type: 'mod',
                 messageIds: Array.isArray(sentMessageIds) ? sentMessageIds : [sentMessageIds],
                 timer: setTimeout(() => {
@@ -2534,10 +2534,11 @@ export function apply(ctx, config) {
             currentState.timer = setTimeout(() => searchStates.delete(session.cid), TIMEOUT_MS);
             
             const total = Math.ceil(currentState.results.length / PAGE_SIZE);
-            let newIndex = currentState.pageIndex;
+            const currentPage = Number(currentState.pageIndex ?? currentState.page ?? 0) || 0;
+            let newIndex = currentPage;
             
-            if (input === 'n' && currentState.pageIndex < total - 1) newIndex++;
-            else if (input === 'p' && currentState.pageIndex > 0) newIndex--;
+            if (input === 'n' && currentPage < total - 1) newIndex++;
+            else if (input === 'p' && currentPage > 0) newIndex--;
             else {
                 await session.send('没有更多页面了。');
                 return;
@@ -2547,8 +2548,8 @@ export function apply(ctx, config) {
             await tryWithdraw(session, currentState.messageIds);
 
             currentState.pageIndex = newIndex;
-            const newMsgIds = await session.send(formatListPage(currentState.results, currentState.pageIndex, currentState.type));
-            currentState.messageIds = newMsgIds;
+            const newMsgIds = await session.send(formatListPage(currentState.results, newIndex, currentState.type));
+            currentState.messageIds = Array.isArray(newMsgIds) ? newMsgIds : [newMsgIds];
         });
         return;
     }
@@ -2562,7 +2563,8 @@ export function apply(ctx, config) {
             if (!currentState) return; // 状态可能已过期
 
             const idx = choice - 1;
-            const pageStart = currentState.pageIndex * PAGE_SIZE;
+            const currentPage = Number(currentState.pageIndex ?? currentState.page ?? 0) || 0;
+            const pageStart = currentPage * PAGE_SIZE;
             const pageEnd = Math.min(pageStart + PAGE_SIZE, currentState.results.length);
             
             if (choice < pageStart + 1 || choice > pageEnd) {

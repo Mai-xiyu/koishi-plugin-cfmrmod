@@ -11,6 +11,7 @@ const cfmr_1 = require("./cfmr");
 const fetch = require('node-fetch');
 const MR_BASE = 'https://api.modrinth.com/v2';
 const CF_MIRROR_BASE = 'https://api.curse.tools/v1/cf';
+const CF_OFFICIAL_BASE = 'https://api.curseforge.com/v1';
 function normalizePlatform(platform) {
     if (platform === 'mr' || platform === 'cf')
         return platform;
@@ -388,9 +389,53 @@ function apply(ctx, config, options) {
         };
     }
     async function getLatestCurseForge(projectId, timeout) {
-        var _a;
-        const files = await fetchJson(`${CF_MIRROR_BASE}/mods/${projectId}/files?index=0&pageSize=1`, timeout);
-        const latest = (_a = files === null || files === void 0 ? void 0 : files.data) === null || _a === void 0 ? void 0 : _a[0];
+        var _a, _b, _c;
+        // 优先使用官方 API（如果配置了 API Key），否则回退到镜像
+        const apiKey = (_a = options === null || options === void 0 ? void 0 : options.cfmr) === null || _a === void 0 ? void 0 : _a.curseforgeApiKey;
+        if (apiKey && String(apiKey).trim()) {
+            // 使用官方 API
+            try {
+                const controller = new AbortController();
+                const id = setTimeout(() => controller.abort(), timeout);
+                try {
+                    // 官方 API 可以使用分页参数
+                    const res = await fetch(`${CF_OFFICIAL_BASE}/mods/${projectId}/files?index=0&pageSize=1`, {
+                        headers: {
+                            'Accept': 'application/json',
+                            'x-api-key': String(apiKey).trim(),
+                        },
+                        signal: controller.signal,
+                    });
+                    if (!res.ok)
+                        throw new Error(`HTTP ${res.status}`);
+                    const files = await res.json();
+                    const latest = (_b = files === null || files === void 0 ? void 0 : files.data) === null || _b === void 0 ? void 0 : _b[0];
+                    if (!latest)
+                        return null;
+                    return {
+                        versionId: String(latest.id),
+                        version: latest.displayName || latest.fileName || String(latest.id),
+                        changelog: latest.changelog || '',
+                        downloads: latest.downloadCount,
+                        datePublished: latest.fileDate || null,
+                        releaseType: latest.releaseType,
+                        loaders: Array.isArray(latest.gameVersions) ? latest.gameVersions.filter((v) => /forge|fabric|quilt|neoforge/i.test(String(v))) : [],
+                        gameVersions: Array.isArray(latest.gameVersions) ? latest.gameVersions.filter((v) => /\d/.test(String(v))) : [],
+                        fileName: latest.fileName || '',
+                        fileSize: latest.fileLength || 0,
+                    };
+                }
+                finally {
+                    clearTimeout(id);
+                }
+            }
+            catch (e) {
+                logger.warn(`[getLatestCurseForge] 官方 API 请求失败，回退到镜像: ${e.message}`);
+            }
+        }
+        // 回退到镜像 API - 不使用分页参数，避免缓存问题
+        const files = await fetchJson(`${CF_MIRROR_BASE}/mods/${projectId}/files`, timeout);
+        const latest = (_c = files === null || files === void 0 ? void 0 : files.data) === null || _c === void 0 ? void 0 : _c[0];
         if (!latest)
             return null;
         return {
@@ -422,7 +467,6 @@ function apply(ctx, config, options) {
                 const src = await toImageSrc(buf);
                 await sendToChannel(channelId, koishi_1.h.image(src));
             }
-            // 仅发送卡片，不发送文字
         }
         catch (e) {
             logger.warn(`发送通知失败(${platform}:${projectId}): ${e.message}`);
@@ -439,7 +483,8 @@ function apply(ctx, config, options) {
             try {
                 const key = `${sub.channelId}|${sub.platform}|${sub.projectId}`;
                 const lastCheck = lastCheckMap.get(key) || 0;
-                if (!force && Date.now() - lastCheck < sub.interval) {
+                const elapsed = Date.now() - lastCheck;
+                if (!force && elapsed < sub.interval) {
                     stats.skipped += 1;
                     continue;
                 }

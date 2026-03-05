@@ -319,10 +319,10 @@ async function drawModCard(url) {
     const $ = cheerio.load(html);
 
     // --- 1. 数据抓取 (保持原逻辑，确保稳定性) ---
-    const titleHtml = $('.class-title').html() || '';
-    const cleanTitleStr = titleHtml
-        .replace(/<div class="class-official-group"[\s\S]*?<\/div>/gi, '')
-        .replace(/<[^>]+>/g, '\n');
+    const titleEl = $('.class-title').clone();
+    titleEl.find('.class-official-group').remove();
+    const titleHtml = titleEl.html() || '';
+    const cleanTitleStr = titleHtml.replace(/<[^>]+>/g, '\n');
     const titleLines = cleanTitleStr.split('\n').map(s=>s.trim()).filter(s=>s);
     const title = titleLines[0] || cleanText($('.class-title').text().replace(/开源|活跃|稳定|闭源|停更|弃坑|半弃坑|Beta/g, '').trim());
     const subTitle = titleLines.slice(1).join(' ');
@@ -447,33 +447,59 @@ async function drawModCard(url) {
     // 简介解析
     const descRoot = $('.common-text').first();
     const descNodes = [];
+    let currentParagraph = '';
+
+    function flushParagraph() {
+      const text = currentParagraph.replace(/\s+/g, ' ').trim();
+      if (text.length > 0) {
+        descNodes.push({ type: 't', val: text, tag: 'p' });
+      }
+      currentParagraph = '';
+    }
+
     function parseNode(node, depth = 0) {
       if (depth > 10) return;
       if (node.type === 'text') {
-        const t = cleanText(node.data);
-        if (t && t.length > 1) {
-          const lastNode = descNodes[descNodes.length - 1];
-          if (!lastNode || lastNode.type !== 't' || lastNode.val !== t) descNodes.push({ type: 't', val: t, tag: 'p' });
-        }
+        currentParagraph += (node.data || '').replace(/[\r\n\t]+/g, ' ');
       } else if (node.type === 'tag') {
         const tagName = node.name;
         if (tagName === 'img') {
+          flushParagraph();
           const src = node.attribs['data-src'] || node.attribs['src'];
           if (src && !src.includes('icon') && !src.includes('smilies') && !src.includes('loading')) descNodes.push({ type: 'i', src: fixUrl(src) });
         } else if (['h1','h2','h3','h4','h5','h6'].includes(tagName)) {
+          flushParagraph();
           const text = cleanText($(node).text());
           if (text && text.length > 1) descNodes.push({ type: 't', val: text, tag: 'h' });
         } else if (tagName === 'li') {
-          const text = cleanText($(node).text());
-          if (text && text.length > 1) descNodes.push({ type: 't', val: '• ' + text, tag: 'li' });
+          flushParagraph();
+          currentParagraph += '• ';
+          if (node.children) node.children.forEach(child => parseNode(child, depth + 1));
+          flushParagraph();
         } else if (tagName === 'br') {
+          flushParagraph();
           descNodes.push({ type: 'br' });
-        } else if (['p','div','span','section','article','ul','ol','strong','b','em','i'].includes(tagName)) {
+        } else if (['p','div','section','article'].includes(tagName)) {
+          flushParagraph();
+          if (node.children) node.children.forEach(child => parseNode(child, depth + 1));
+          flushParagraph();
+        } else if (tagName === 'tr') {
+          flushParagraph();
+          if (node.children) node.children.forEach(child => parseNode(child, depth + 1));
+          flushParagraph();
+        } else if (tagName === 'td' || tagName === 'th') {
+          currentParagraph += ' ';
+          if (node.children) node.children.forEach(child => parseNode(child, depth + 1));
+          currentParagraph += '  ';
+        } else {
           if (node.children) node.children.forEach(child => parseNode(child, depth + 1));
         }
       }
     }
-    if (descRoot.length) descRoot[0].children.forEach(child => parseNode(child, 0));
+    if (descRoot.length) {
+      descRoot[0].children.forEach(child => parseNode(child, 0));
+      flushParagraph();
+    }
     if (descNodes.length === 0) {
       const metaDesc = $('meta[name="description"]').attr('content');
       if (metaDesc) descNodes.push({ type: 't', val: metaDesc, tag: 'p' });
@@ -548,10 +574,20 @@ async function drawModCard(url) {
         const isHeader = node.tag === 'h';
         dummy.font = `${isHeader ? 'bold' : ''} ${isHeader ? 22 : 16}px "${font}"`;
         const lh = isHeader ? 32 : 26;
-        const lines = wrapText(dummy, node.val, 0, 0, contentW, lh, 5000, false) / lh;
-        descH += lines * lh + (isHeader ? 15 : 10);
+        const totalNodeHeight = wrapText(dummy, node.val, 0, 0, contentW, lh, 5000, false);
+        descH += totalNodeHeight + (isHeader ? 15 : 10);
       } else if (node.type === 'i') {
-        descH += 400; // 估算图片高度
+        try {
+          const img = await loadImage(node.src);
+          node.imgCache = img; // 缓存供绘制时使用
+          const maxH = 400;
+          let r = Math.min(contentW / img.width, maxH / img.height);
+          if (r > 1) r = 1;
+          const dh = img.height * r;
+          descH += dh + 20;
+        } catch(e) {
+          node.imgFailed = true;
+        }
       } else if (node.type === 'br') {
         descH += 10;
       }
@@ -561,8 +597,8 @@ async function drawModCard(url) {
     // 总高度
     let cursorY = margin + 40; // Top traffic lights area
     const components = [
-      { h: headerH, gap: 20 },
       { h: tagsH, gap: 10 },
+      { h: headerH, gap: 20 },
       { h: coverH, gap: 25 },
       { h: statsH, gap: 25 },
       { h: propsH, gap: 25 },
@@ -618,7 +654,24 @@ async function drawModCard(url) {
     let dy = winY + 50;
     const cx = winX + winPadding;
 
-    // 1. Header
+    // 1. Tags
+    if (tags.length) {
+      let tx = cx;
+      ctx.textBaseline = 'middle'; // Fix tag text centering
+      tags.forEach(t => {
+        ctx.font = `12px "${font}"`;
+        const tw = ctx.measureText(t.t).width + 20;
+        if (tx + tw < cx + contentW) {
+          ctx.fillStyle = t.bg; roundRect(ctx, tx, dy, tw, 24, 6); ctx.fill();
+          ctx.fillStyle = t.c; ctx.fillText(t.t, tx + 10, dy + 12);
+          tx += tw + 10;
+        }
+      });
+      ctx.textBaseline = 'alphabetic'; // reset
+      dy += 35;
+    }
+
+    // 2. Header
     // Icon
     const iconSize = 80;
     if (iconUrl) {
@@ -662,21 +715,6 @@ async function drawModCard(url) {
     }
     
     dy += Math.max(headerH, 100) + 20;
-
-    // 2. Tags
-    if (tags.length) {
-      let tx = cx;
-      tags.forEach(t => {
-        ctx.font = `12px "${font}"`;
-        const tw = ctx.measureText(t.t).width + 20;
-        if (tx + tw < cx + contentW) {
-          ctx.fillStyle = t.bg; roundRect(ctx, tx, dy, tw, 24, 6); ctx.fill();
-          ctx.fillStyle = t.c; ctx.fillText(t.t, tx + 10, dy + 6);
-          tx += tw + 10;
-        }
-      });
-      dy += 35;
-    }
 
     // 3. Cover Image
     if (coverUrl) {
@@ -779,12 +817,18 @@ async function drawModCard(url) {
           const lh = isHeader ? 32 : 26;
           dy = wrapText(ctx, node.val, cx, dy, contentW, lh, 5000, true) + (isHeader ? 15 : 10);
         } else if (node.type === 'i') {
+          if (node.imgFailed) continue;
           try {
-            const img = await loadImage(node.src);
+            const img = node.imgCache || await loadImage(node.src);
             const maxH = 400;
-            const r = Math.min(contentW / img.width, maxH / img.height);
+            let r = Math.min(contentW / img.width, maxH / img.height);
+            if (r > 1) r = 1; // 避免小图片被强制拉伸放大
             const dw = img.width * r; const dh = img.height * r;
+            ctx.save();
+            roundRect(ctx, cx + (contentW - dw) / 2, dy, dw, dh, 8);
+            ctx.clip();
             ctx.drawImage(img, cx + (contentW - dw) / 2, dy, dw, dh);
+            ctx.restore();
             dy += dh + 20;
           } catch(e) {}
         } else if (node.type === 'br') {

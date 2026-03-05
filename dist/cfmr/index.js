@@ -340,6 +340,38 @@ async function parseContentToNodes(htmlContent, maxWidth, baseUrl = '') {
     return nodes;
 }
 // ================= 绘图核心 (Layout Engine) =================
+// 文本翻译映射
+const TRANSLATIONS = {
+    zh: {
+        compatibility: 'Compatibility',
+        platforms: 'Platforms',
+        environments: 'Supported environments',
+        links: 'Links',
+        creators: 'Creators',
+        client: 'Client',
+        server: 'Server',
+        downloads: 'Downloads',
+        updated: 'Updated',
+        created: 'Created',
+        license: 'License',
+        published: 'Published'
+    },
+    en: {
+        compatibility: 'Compatibility',
+        platforms: 'Platforms',
+        environments: 'Supported environments',
+        links: 'Links',
+        creators: 'Creators',
+        client: 'Client',
+        server: 'Server',
+        downloads: 'Downloads',
+        updated: 'Updated',
+        created: 'Created',
+        license: 'License',
+        published: 'Published'
+    }
+};
+const getTranslation = (lang, key) => { var _a; return ((_a = TRANSLATIONS[lang || 'zh']) === null || _a === void 0 ? void 0 : _a[key]) || TRANSLATIONS.zh[key]; };
 async function drawProjectCard(data) {
     const margin = 24;
     const gap = 32;
@@ -347,6 +379,7 @@ async function drawProjectCard(data) {
     const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
     const maxCanvasHeight = data.maxCanvasHeight || 8000;
     const contentOnly = !!data._contentOnly;
+    const lang = data._lang || 'zh';
     // 1. 预处理正文
     let rawBody = data.body;
     if (!rawBody && data.summary)
@@ -358,11 +391,11 @@ async function drawProjectCard(data) {
     const dummy = dummyC.getContext('2d');
     // Sidebar 内容
     const sections = contentOnly ? [] : [
-        { t: 'Compatibility', d: (data.gameVersions || []).slice(0, 15), type: 'chips' },
-        { t: 'Platforms', d: data.loaders || [], type: 'chips' },
-        { t: 'Supported environments', d: [data.clientSide ? 'Client' : null, data.serverSide ? 'Server' : null].filter(Boolean), type: 'chips' },
-        { t: 'Links', d: data.links || [], type: 'links' },
-        { t: 'Creators', d: [data.author], type: 'text' }
+        { t: getTranslation(lang, 'compatibility'), d: (data.gameVersions || []).slice(0, 15), type: 'chips' },
+        { t: getTranslation(lang, 'platforms'), d: data.loaders || [], type: 'chips' },
+        { t: getTranslation(lang, 'environments'), d: [data.clientSide ? getTranslation(lang, 'client') : null, data.serverSide ? getTranslation(lang, 'server') : null].filter(Boolean), type: 'chips' },
+        { t: getTranslation(lang, 'links'), d: data.links || [], type: 'links' },
+        { t: getTranslation(lang, 'creators'), d: [data.author], type: 'text' }
     ];
     const measureChipsHeight = (items, maxWidth, ctx, fontSize = 13, padX = 16, rowH = 24, rowGap = 8) => {
         if (!items || !items.length)
@@ -746,11 +779,11 @@ async function drawProjectCard(data) {
             ry += 24;
         };
         if (data.license)
-            drawInfoItem('', `License: ${data.license}`);
-        drawInfoItem('', `Updated: ${data.updated}`);
-        drawInfoItem('', `Created: ${data.created || '--'}`);
+            drawInfoItem('', `${getTranslation(lang, 'license')}: ${data.license}`);
+        drawInfoItem('', `${getTranslation(lang, 'updated')}: ${data.updated}`);
+        drawInfoItem('', `${getTranslation(lang, 'created')}: ${data.created || '--'}`);
         ry += 20;
-        drawSidebarSection('Creators', [data.author], 'text');
+        drawSidebarSection(getTranslation(lang, 'creators'), [data.author], 'text');
     }
     // --- Left Content ---
     let lx = margin;
@@ -831,6 +864,7 @@ async function drawProjectCardCF(data) {
     const font = GLOBAL_FONT_FAMILY;
     const maxCanvasHeight = data.maxCanvasHeight || 8000;
     const contentOnly = !!data._contentOnly;
+    const lang = data._lang || 'zh';
     // CF Colors
     const C_BG = '#1b1b1b';
     const C_PANEL = '#2d2d2d';
@@ -889,10 +923,10 @@ async function drawProjectCardCF(data) {
         sidebarH += 50 + 20;
         // 2. Details
         const details = [
-            { l: 'Downloads', v: formatNumber(data.downloads) },
-            { l: 'Created', v: data.created || '--' },
-            { l: 'Updated', v: data.updated || '--' },
-            { l: 'License', v: data.license || 'Custom' }
+            { l: getTranslation(lang, 'downloads'), v: formatNumber(data.downloads) },
+            { l: getTranslation(lang, 'created'), v: data.created || '--' },
+            { l: getTranslation(lang, 'updated'), v: data.updated || '--' },
+            { l: getTranslation(lang, 'license'), v: data.license || 'Custom' }
         ];
         if (data.follows)
             details.splice(1, 0, { l: 'Follows', v: formatNumber(data.follows) });
@@ -920,7 +954,7 @@ async function drawProjectCardCF(data) {
         // 6. Links
         if (data.links && data.links.length) {
             const h = 40 + data.links.length * 24;
-            sidebarItems.push({ type: 'links', title: 'Links', data: data.links, h });
+            sidebarItems.push({ type: 'links', title: getTranslation(lang, 'links'), data: data.links, h });
             sidebarH += h + 20;
         }
         // 7. Members
@@ -2043,16 +2077,21 @@ function apply(ctx, config) {
             catch (e) { }
         }
     };
-    const formatList = (results, page, size) => {
+    const formatList = (results, page, size, useEnglish = false) => {
         const total = Math.ceil(results.length / size);
         const list = results.slice(page * size, (page + 1) * size);
+        if (useEnglish) {
+            return `Search Results (${page + 1}/${total}):\n` +
+                list.map((item, i) => `${i + 1 + page * size}. [${item.platform}] ${item.name} - ${item.author}`).join('\n') +
+                '\nEnter number to view details (p/n to turn page, q to quit)';
+        }
         return `搜索结果 (${page + 1}/${total}):\n` +
             list.map((item, i) => `${i + 1 + page * size}. [${item.platform}] ${item.name} - ${item.author}`).join('\n') +
-            '\n请输入序号查看详情 (p/n 翻页)';
+            '\n请输入序号查看详情 (p/n 翻页, q 退出)';
     };
-    const handleSearch = async (session, platform, type, keyword) => {
+    const handleSearch = async (session, platform, type, keyword, useEnglish = false) => {
         if (!keyword) {
-            await session.send('请输入关键词');
+            await session.send(useEnglish ? 'Please enter a keyword' : '请输入关键词');
             return;
         }
         let results = [];
@@ -2063,11 +2102,11 @@ function apply(ctx, config) {
                 results = await searchCurseForge(keyword, type, config.curseforgeApiKey, config.requestTimeout, config.curseforgeGameId);
         }
         catch (e) {
-            await session.send(`搜索出错: ${e.message}`);
+            await session.send(`${useEnglish ? 'Search error' : '搜索出错'}: ${e.message}`);
             return;
         }
         if (!results.length) {
-            await session.send('未找到结果');
+            await session.send(useEnglish ? 'No results found' : '未找到结果');
             return;
         }
         if (results.length === 1) {
@@ -2079,6 +2118,7 @@ function apply(ctx, config) {
                 else
                     detailData = await fetchCurseForgeDetail(item.id, config.curseforgeApiKey, config.requestTimeout, item._cfUrl);
                 detailData.type = item.type;
+                detailData._lang = useEnglish ? 'en' : 'zh';
                 const imgBufs = detailData.source === 'CurseForge'
                     ? await drawProjectCardCF({
                         ...detailData,
@@ -2092,16 +2132,16 @@ function apply(ctx, config) {
                     await session.send(h.image(await toImageSrc(buf)));
                 }
                 if (config.sendLink)
-                    await session.send(`链接: ${detailData.url}`);
+                    await session.send(`${useEnglish ? 'Link' : '链接'}: ${detailData.url}`);
             }
             catch (e) {
                 logger.error(e);
-                return session.send(`生成失败: ${e.message}`);
+                return session.send(`${useEnglish ? 'Generation failed' : '生成失败'}: ${e.message}`);
             }
             return;
         }
-        states.set(session.cid, { results, page: 0, platform, type, listMessageIds: [] });
-        const msgId = await session.send(formatList(results, 0, config.pageSize));
+        states.set(session.cid, { results, page: 0, platform, type, listMessageIds: [], useEnglish });
+        const msgId = await session.send(formatList(results, 0, config.pageSize, useEnglish));
         states.get(session.cid).listMessageIds = normalizeMessageIds(msgId);
     };
     ctx.middleware(async (session, next) => {
@@ -2109,21 +2149,22 @@ function apply(ctx, config) {
         if (!state)
             return next();
         const text = session.content.trim();
+        const useEnglish = state.useEnglish || false;
         if (text === 'q') {
             states.delete(session.cid);
-            return session.send('已退出');
+            return session.send(useEnglish ? 'Exited' : '已退出');
         }
         if (text === 'n') {
             await tryWithdraw(session, state.listMessageIds);
             state.page++;
-            const msgId = await session.send(formatList(state.results, state.page, config.pageSize));
+            const msgId = await session.send(formatList(state.results, state.page, config.pageSize, useEnglish));
             state.listMessageIds = normalizeMessageIds(msgId);
             return;
         }
         if (text === 'p') {
             await tryWithdraw(session, state.listMessageIds);
             state.page = Math.max(0, state.page - 1);
-            const msgId = await session.send(formatList(state.results, state.page, config.pageSize));
+            const msgId = await session.send(formatList(state.results, state.page, config.pageSize, useEnglish));
             state.listMessageIds = normalizeMessageIds(msgId);
             return;
         }
@@ -2140,6 +2181,7 @@ function apply(ctx, config) {
                     else
                         detailData = await fetchCurseForgeDetail(item.id, config.curseforgeApiKey, config.requestTimeout, item._cfUrl);
                     detailData.type = item.type;
+                    detailData._lang = useEnglish ? 'en' : 'zh';
                     const imgBufs = detailData.source === 'CurseForge'
                         ? await drawProjectCardCF({
                             ...detailData,
@@ -2153,11 +2195,11 @@ function apply(ctx, config) {
                         await session.send(h.image(await toImageSrc(buf)));
                     }
                     if (config.sendLink)
-                        await session.send(`链接: ${detailData.url}`);
+                        await session.send(`${useEnglish ? 'Link' : '链接'}: ${detailData.url}`);
                 }
                 catch (e) {
                     logger.error(e);
-                    return session.send(`生成失败: ${e.message}`);
+                    return session.send(`${useEnglish ? 'Generation failed' : '生成失败'}: ${e.message}`);
                 }
                 return;
             }
@@ -2166,20 +2208,74 @@ function apply(ctx, config) {
     });
     const cfPrefix = ((_a = config === null || config === void 0 ? void 0 : config.prefixes) === null || _a === void 0 ? void 0 : _a.cf) || 'cf';
     const mrPrefix = ((_b = config === null || config === void 0 ? void 0 : config.prefixes) === null || _b === void 0 ? void 0 : _b.mr) || 'mr';
-    ctx.command(`${mrPrefix}.help`).action(() => [
-        `${mrPrefix} <关键词>  | 默认搜索 Modrinth Mod`,
-        `${mrPrefix}.mod/.pack/.resource/.shader/.plugin <关键词>`,
-        '列表交互：输入序号查看，n 下一页，p 上一页，q 退出',
-    ].join('\n'));
-    ctx.command(`${cfPrefix}.help`).action(() => [
-        `${cfPrefix} <关键词>  | 默认搜索 CurseForge Mod`,
-        `${cfPrefix}.mod/.pack/.resource/.shader/.plugin <关键词>`,
-        '列表交互：输入序号查看，n 下一页，p 上一页，q 退出',
-    ].join('\n'));
-    ['mod', 'pack', 'resource', 'shader', 'plugin'].forEach(t => {
-        ctx.command(`${mrPrefix}.${t} <keyword:text>`).action(({ session }, kw) => handleSearch(session, 'mr', t, kw));
-        ctx.command(`${cfPrefix}.${t} <keyword:text>`).action(({ session }, kw) => handleSearch(session, 'cf', t, kw));
+    ctx.command(`${mrPrefix}.helpme`, '显示 Modrinth 搜索帮助')
+        .option('en', '-e, --en Use English')
+        .action(({ options }) => {
+        if (options === null || options === void 0 ? void 0 : options.en) {
+            return [
+                `${mrPrefix} <keyword>  | Search Modrinth Mod (default)`,
+                `${mrPrefix}.mod/.pack/.resource/.shader/.plugin <keyword>`,
+                'Interaction: Enter number to view, n next page, p previous page, q quit',
+                'Options: -e/--en Use English display',
+            ].join('\n');
+        }
+        return [
+            `${mrPrefix} <关键词>  | 默认搜索 Modrinth Mod`,
+            `${mrPrefix}.mod/.pack/.resource/.shader/.plugin <关键词>`,
+            '列表交互：输入序号查看，n 下一页，p 上一页，q 退出',
+            '选项：-e/--en 使用英文显示卡片',
+        ].join('\n');
     });
-    ctx.command(`${mrPrefix} <keyword:text>`).action(({ session }, kw) => handleSearch(session, 'mr', 'mod', kw));
-    ctx.command(`${cfPrefix} <keyword:text>`).action(({ session }, kw) => handleSearch(session, 'cf', 'mod', kw));
+    ctx.command(`${cfPrefix}.helpme`, '显示 CurseForge 搜索帮助')
+        .option('en', '-e, --en Use English')
+        .action(({ options }) => {
+        if (options === null || options === void 0 ? void 0 : options.en) {
+            return [
+                `${cfPrefix} <keyword>  | Search CurseForge Mod (default)`,
+                `${cfPrefix}.mod/.pack/.resource/.shader/.plugin <keyword>`,
+                'Interaction: Enter number to view, n next page, p previous page, q quit',
+                'Options: -e/--en Use English display',
+            ].join('\n');
+        }
+        return [
+            `${cfPrefix} <关键词>  | 默认搜索 CurseForge Mod`,
+            `${cfPrefix}.mod/.pack/.resource/.shader/.plugin <关键词>`,
+            '列表交互：输入序号查看，n 下一页，p 上一页，q 退出',
+            '选项：-e/--en 使用英文显示卡片',
+        ].join('\n');
+    });
+    ['mod', 'pack', 'resource', 'shader', 'plugin'].forEach(t => {
+        ctx.command(`${mrPrefix}.${t} [...keyword]`, `搜索 Modrinth ${t}`)
+            .option('e', '-e 使用英文', { fallback: false })
+            .action((argv, ...args) => {
+            var _a;
+            const allArgs = args.flat().map(String);
+            const kw = allArgs.join(' ');
+            return handleSearch(argv.session, 'mr', t, kw, ((_a = argv.options) === null || _a === void 0 ? void 0 : _a.e) === true);
+        });
+        ctx.command(`${cfPrefix}.${t} [...keyword]`, `搜索 CurseForge ${t}`)
+            .option('e', '-e 使用英文', { fallback: false })
+            .action((argv, ...args) => {
+            var _a;
+            const allArgs = args.flat().map(String);
+            const kw = allArgs.join(' ');
+            return handleSearch(argv.session, 'cf', t, kw, ((_a = argv.options) === null || _a === void 0 ? void 0 : _a.e) === true);
+        });
+    });
+    ctx.command(`${mrPrefix} [...keyword]`, '搜索 Modrinth 模组')
+        .option('e', '-e 使用英文', { fallback: false })
+        .action((argv, ...args) => {
+        var _a;
+        const allArgs = args.flat().map(String);
+        const kw = allArgs.join(' ');
+        return handleSearch(argv.session, 'mr', 'mod', kw, ((_a = argv.options) === null || _a === void 0 ? void 0 : _a.e) === true);
+    });
+    ctx.command(`${cfPrefix} [...keyword]`, '搜索 CurseForge 模组')
+        .option('e', '-e 使用英文', { fallback: false })
+        .action((argv, ...args) => {
+        var _a;
+        const allArgs = args.flat().map(String);
+        const kw = allArgs.join(' ');
+        return handleSearch(argv.session, 'cf', 'mod', kw, ((_a = argv.options) === null || _a === void 0 ? void 0 : _a.e) === true);
+    });
 }

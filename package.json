@@ -1,7 +1,7 @@
 {
-  "name": "koishi-plugin-cfmrmod",
-  "version": "1.1.1",
-  "description": "Koishi 插件：搜索 CurseForge/Modrinth/MCMod 并渲染图片卡片",
+  "name": "koishi-plugin-cfmrmod-napi-yabo",
+  "version": "1.0.2",
+  "description": "Koishi 插件：搜索 CurseForge/Modrinth/MCMod 并渲染图片卡片（@napi-rs/canvas 版）",
   "main": "dist/index.js",
   "files": [
     "dist"
@@ -21,28 +21,28 @@
     "mcmod",
     "mcmod.cn"
   ],
-  "author": "mai_xiyu",
-  "homepage": "https://github.com/Mai-xiyu/koishi-plugin-cfmrmod",
+  "author": "yabo083",
+  "homepage": "https://github.com/yabo083/koishi-plugin-cfmrmod",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Mai-xiyu/koishi-plugin-cfmrmod.git"
+    "url": "git+https://github.com/yabo083/koishi-plugin-cfmrmod.git"
   },
   "bugs": {
-    "url": "https://github.com/Mai-xiyu/koishi-plugin-cfmrmod/issues"
+    "url": "https://github.com/yabo083/koishi-plugin-cfmrmod/issues"
   },
   "license": "MIT",
   "engines": {
-    "node": ">=14"
+    "node": ">=18"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "pub": "npm run build && npm publish --access public"
   },
   "peerDependencies": {
-    "@ltxhhz/koishi-plugin-skia-canvas": "^0.0.10",
     "koishi": "^4.0.0"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^0.1.95",
     "cheerio": "^1.0.0-rc.12",
     "marked": "^9.1.5",
     "node-fetch": "^2.6.12"
@@ -52,11 +52,10 @@
   },
   "koishi": {
     "description": {
-      "zh": "从 CurseForge/Modrinth/MCMod 搜索模组/整合包/光影等内容，并生成图片卡片。"
+      "zh": "从 CurseForge/Modrinth/MCMod 搜索模组/整合包/光影等内容，并生成图片卡片（@napi-rs/canvas 版）。"
     },
     "service": {
       "required": [
-        "skia",
         "database"
       ]
     }

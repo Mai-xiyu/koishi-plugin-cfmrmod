@@ -1,10 +1,11 @@
 import { Schema } from 'koishi';
+import { createCanvas, GlobalFonts, loadImage, Path2D } from '@napi-rs/canvas';
 import * as cfmr from './plugins/cfmr';
 import * as mcmod from './plugins/mcmod';
 import * as notify from './notify';
 
 export const name = 'minecraft-search';
-export const inject = ['skia', 'database'];
+export const inject = ['database'];
 
 export const Config = Schema.object({
   prefixes: Schema.object({
@@ -35,11 +36,22 @@ export const Config = Schema.object({
 });
 
 export function apply(ctx: any, config: any) {
+  const canvasAdapter = {
+    createCanvas,
+    loadImage,
+    Path2D,
+    GlobalFonts,
+    registerFont(path: string, family: string) {
+      return GlobalFonts.registerFromPath(path, family);
+    },
+  };
+
   const prefixes = config?.prefixes || {};
   const shared = {
     prefixes,
     timeouts: config?.timeouts,
     debug: config?.debug,
+    canvas: canvasAdapter,
   };
   if (cfmr.apply) cfmr.apply(ctx, { ...(config?.cfmr || {}), ...shared });
   if (mcmod.apply) mcmod.apply(ctx, { ...(config?.mcmod || {}), ...shared });

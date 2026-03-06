@@ -7,6 +7,7 @@ const cheerio = require('cheerio');
 const fs = require('fs');
 const path = require('path');
 const { h, Schema } = require('koishi');
+const napiCanvas = require('@napi-rs/canvas');
 let createCanvas;
 let loadImage;
 let registerFont;
@@ -916,7 +917,7 @@ async function drawModCard(url) {
     ctx.font = `12px "${font}"`;
     ctx.textAlign = 'center';
     ctx.fillText('mcmod.cn | Powered by Koishi', width / 2, totalH - 12);
-    return canvas.toBuffer('image/png');
+    return await canvas.encode('png');
 }
 // ================= 渲染：教程卡片 (macOS 风格) =================
 async function drawTutorialCard(url) {
@@ -1264,7 +1265,7 @@ async function drawTutorialCard(url) {
     ctx.font = `12px "${font}"`;
     ctx.textAlign = 'center';
     ctx.fillText('mcmod.cn | Powered by Koishi', width / 2, canvasH - 15);
-    return canvas.toBuffer('image/png');
+    return await canvas.encode('png');
 }
 // ================= 渲染：作者卡片 (macOS 风格) =================
 // ================= 渲染：作者卡片 (macOS 风格) =================
@@ -1730,7 +1731,7 @@ async function drawAuthorCard(url) {
     ctx.font = `12px "${font}"`;
     ctx.textAlign = 'center';
     ctx.fillText('mcmod.cn | Powered by Koishi', width / 2, totalH - 15);
-    return canvas.toBuffer('image/png');
+    return await canvas.encode('png');
 }
 // ================= 普通用户卡片 (Center Card) =================
 async function drawCenterCard(uid, logger) { return drawCenterCardImpl(uid, logger); }
@@ -2230,7 +2231,7 @@ async function drawCenterCardImpl(uid, logger) {
     ctx.font = `12px "${font}"`;
     ctx.textAlign = 'center';
     ctx.fillText('mcmod.cn & bbs.mcmod.cn | Powered by Koishi | Plugin By Mai_xiyu', width / 2, totalHeight - 15);
-    return canvas.toBuffer('image/png');
+    return await canvas.encode('png');
 }
 // ================= 详情页卡片 =================
 // ================= 详情页卡片 (资料/物品/通用) =================
@@ -2486,35 +2487,48 @@ async function createInfoCard(url, type) {
     ctx.font = `12px "${font}"`;
     ctx.textAlign = 'center';
     ctx.fillText('mcmod.cn | Powered by Koishi', width / 2, totalH - 15);
-    return canvas.toBuffer('image/png');
+    return await canvas.encode('png');
 }
 // ================= Koishi =================
 exports.name = 'mcmod-search';
 exports.Config = Schema.object({
     sendLink: Schema.boolean().default(true).description('发送卡片后是否附带链接'),
     cookie: Schema.string().description('【可选】手动填写 mcmod.cn 的 Cookie'),
+    fontPath: Schema.string().role('path').description('可选：自定义字体文件路径'),
 });
 function apply(ctx, config) {
     var _a;
     const logger = ctx.logger('mcmod');
-    const skia = ctx.skia;
-    if (!(skia === null || skia === void 0 ? void 0 : skia.Canvas) || !(skia === null || skia === void 0 ? void 0 : skia.loadImage)) {
-        throw new Error('缺少 skia 服务，请先启用 @ltxhhz/koishi-plugin-skia-canvas');
+    const canvasService = (config === null || config === void 0 ? void 0 : config.canvas) || ctx.canvas;
+    if (!(canvasService === null || canvasService === void 0 ? void 0 : canvasService.createCanvas) || !(canvasService === null || canvasService === void 0 ? void 0 : canvasService.loadImage)) {
+        throw new Error('缺少可用 canvas 实现，请检查插件安装');
     }
     createCanvas = (w, h) => {
-        const c = new skia.Canvas(w || 0, h || 0);
+        const width = Math.max(1, Number(w) || 1);
+        const height = Math.max(1, Number(h) || 1);
+        let c;
+        try {
+            c = canvasService.createCanvas(width, height);
+        }
+        catch { }
         if (!c || typeof c.getContext !== 'function') {
-            throw new Error('skia 服务异常：Canvas 无效，请确认使用 @ltxhhz/koishi-plugin-skia-canvas');
+            c = napiCanvas.createCanvas(width, height);
+        }
+        if (!c || typeof c.getContext !== 'function') {
+            throw new Error('canvas 服务异常：无法创建 Canvas 实例');
         }
         return c;
     };
-    loadImage = skia.loadImage;
+    loadImage = canvasService.loadImage;
     registerFont = (path, options) => {
-        var _a;
-        if ((_a = skia.FontLibrary) === null || _a === void 0 ? void 0 : _a.use)
-            skia.FontLibrary.use(path, options === null || options === void 0 ? void 0 : options.family);
+        var _a, _b;
+        const family = (options === null || options === void 0 ? void 0 : options.family) || 'MCModFont';
+        if (typeof canvasService.registerFont === 'function') {
+            return canvasService.registerFont(path, family);
+        }
+        return (_b = (_a = canvasService.GlobalFonts) === null || _a === void 0 ? void 0 : _a.registerFromPath) === null || _b === void 0 ? void 0 : _b.call(_a, path, family);
     };
-    // 取消自定义字体配置，使用 skia 默认字体
+    initFont(config === null || config === void 0 ? void 0 : config.fontPath, logger, registerFont);
     // 初始化 Cookie
     if (config.cookie) {
         globalCookie = config.cookie;

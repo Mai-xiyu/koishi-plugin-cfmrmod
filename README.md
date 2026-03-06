@@ -1,4 +1,4 @@
-# koishi-plugin-cfmrmod-napi-yabo
+# koishi-plugin-cfmrmod
 
 Koishi 插件：搜索 CurseForge / Modrinth / MCMod，并渲染图片卡片。
 哥给个star吧

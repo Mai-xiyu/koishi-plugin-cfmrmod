@@ -36,11 +36,12 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.Config = exports.inject = exports.name = void 0;
 exports.apply = apply;
 const koishi_1 = require("koishi");
+const canvas_1 = require("@napi-rs/canvas");
 const cfmr = __importStar(require("./plugins/cfmr"));
 const mcmod = __importStar(require("./plugins/mcmod"));
 const notify = __importStar(require("./notify"));
 exports.name = 'minecraft-search';
-exports.inject = ['skia', 'database'];
+exports.inject = ['database'];
 exports.Config = koishi_1.Schema.object({
     prefixes: koishi_1.Schema.object({
         cf: koishi_1.Schema.string().default('cf'),
@@ -69,11 +70,21 @@ exports.Config = koishi_1.Schema.object({
     mcmod: mcmod.Config.description('MCMod.cn 搜索与图片卡片'),
 });
 function apply(ctx, config) {
+    const canvasAdapter = {
+        createCanvas: canvas_1.createCanvas,
+        loadImage: canvas_1.loadImage,
+        Path2D: canvas_1.Path2D,
+        GlobalFonts: canvas_1.GlobalFonts,
+        registerFont(path, family) {
+            return canvas_1.GlobalFonts.registerFromPath(path, family);
+        },
+    };
     const prefixes = (config === null || config === void 0 ? void 0 : config.prefixes) || {};
     const shared = {
         prefixes,
         timeouts: config === null || config === void 0 ? void 0 : config.timeouts,
         debug: config === null || config === void 0 ? void 0 : config.debug,
+        canvas: canvasAdapter,
     };
     if (cfmr.apply)
         cfmr.apply(ctx, { ...((config === null || config === void 0 ? void 0 : config.cfmr) || {}), ...shared });

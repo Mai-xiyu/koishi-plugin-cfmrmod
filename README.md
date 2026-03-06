@@ -1,8 +1,23 @@
-# koishi-plugin-cfmrmod
+# koishi-plugin-cfmrmod-napi-yabo
 
-Koishi 插件：搜索 CurseForge / Modrinth / MCMod，并渲染图片卡片。
-哥给个star吧
-Star就是我维护的动力🤤
+Koishi 插件：搜索 CurseForge / Modrinth / MCMod，并渲染图片卡片（独立维护版）。
+
+## 前置依赖
+
+- **必须手动安装 `@napi-rs/canvas`，否则图片生成功能会被禁用。**
+- 在 Koishi 实例目录执行：
+
+```bash
+npm i @napi-rs/canvas
+```
+
+### Emoji 字体说明
+
+- 为了保证 emoji 与符号显示，建议在系统安装至少一套 emoji 字体：
+  - Linux: `Noto Color Emoji`
+  - Windows: `Segoe UI Emoji`
+  - macOS: `Apple Color Emoji`
+- 插件会尝试自动注册系统字体并在日志输出当前可用字体列表。
 
 ## 使用方法
 
@@ -37,6 +52,9 @@ Star就是我维护的动力🤤
 - `prefixes`: 设置 `cf` / `mr` / `cnmc` 指令前缀
 - `timeouts`: 搜索会话超时（毫秒）
 - `debug`: 调试日志开关
+- `render.image.fetchWithHeaders`: 图片是否启用带 Referer/Cookie 的 HTTP 抓取解码（默认开启）
+- `render.emoji.twemoji`: 是否启用 Twemoji 兜底（默认开启）
+- `render.emoji.cdn`: Twemoji CDN 地址前缀（默认 jsDelivr）
 
 #### 更新通知（notify）
 - `notify.enabled`: 是否开启更新通知

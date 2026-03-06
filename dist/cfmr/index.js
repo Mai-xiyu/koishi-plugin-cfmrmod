@@ -12,7 +12,6 @@ const { Schema, h } = require('koishi');
 const fetch = require('node-fetch');
 const cheerio = require('cheerio');
 const { marked } = require('marked');
-const napiCanvas = require('@napi-rs/canvas');
 let createCanvas;
 let loadImage;
 let Path2DRef;
@@ -21,6 +20,8 @@ let globalFontsRef;
 let configuredFontPath = '';
 let fontsChecked = false;
 let warnLog = (msg) => console.warn(msg);
+let RENDER_DEBUG = false;
+let RENDER_IMAGE_FETCH_WITH_HEADERS = true;
 async function toImageSrc(input) {
     const value = (input && typeof input.then === 'function') ? await input : input;
     if (!value)
@@ -60,6 +61,16 @@ exports.Config = Schema.object({
     requestTimeout: Schema.number().default(15000).description('请求超时(ms)'),
     sendLink: Schema.boolean().default(true).description('发送卡片后是否附带链接'),
     fontPath: Schema.string().role('path').description('可选：自定义字体文件路径'),
+    debug: Schema.boolean().default(false).description('输出渲染调试日志'),
+    render: Schema.object({
+        emoji: Schema.object({
+            twemoji: Schema.boolean().default(true).description('启用 Twemoji 图形兜底（预留）'),
+            cdn: Schema.string().default('https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72').description('Twemoji CDN 前缀（预留）')
+        }).default({}),
+        image: Schema.object({
+            fetchWithHeaders: Schema.boolean().default(true).description('图片先用 HTTP(带 Referer)抓取后解码')
+        }).default({})
+    }).default({})
 });
 // ================= 常量定义 =================
 const MR_BASE = 'https://api.modrinth.com/v2';
@@ -85,6 +96,7 @@ function ensureFontsReady() {
         const families = Array.from((globalFontsRef === null || globalFontsRef === void 0 ? void 0 : globalFontsRef.families) || []);
         if (families.length > 0) {
             GLOBAL_FONT_FAMILY = String(families[0]);
+            warnLog(`[Font] 当前可用字体: ${families.slice(0, 8).join(', ')}`);
             return;
         }
     }
@@ -93,7 +105,7 @@ function ensureFontsReady() {
     if (configuredFontPath) {
         candidates.push(configuredFontPath);
     }
-    candidates.push('C:\\Windows\\Fonts\\msyh.ttc', 'C:\\Windows\\Fonts\\msyh.ttf', 'C:\\Windows\\Fonts\\simhei.ttf', '/usr/share/fonts/truetype/noto/NotoSansSC-Regular.otf', '/usr/share/fonts/noto/NotoSansSC-Regular.otf', '/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc', '/System/Library/Fonts/PingFang.ttc');
+    candidates.push('C:\\Windows\\Fonts\\msyh.ttc', 'C:\\Windows\\Fonts\\msyh.ttf', 'C:\\Windows\\Fonts\\simhei.ttf', 'C:\\Windows\\Fonts\\seguiemj.ttf', '/usr/share/fonts/truetype/noto/NotoSansSC-Regular.otf', '/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf', '/usr/share/fonts/noto/NotoSansSC-Regular.otf', '/usr/share/fonts/noto/NotoColorEmoji.ttf', '/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc', '/System/Library/Fonts/PingFang.ttc', '/System/Library/Fonts/Apple Color Emoji.ttc');
     for (const filePath of candidates) {
         if (!filePath)
             continue;
@@ -101,6 +113,7 @@ function ensureFontsReady() {
             const family = 'CFMRModFont';
             registerFont(filePath, { family });
             GLOBAL_FONT_FAMILY = family;
+            warnLog(`[Font] 已注册字体: ${filePath}`);
             return;
         }
         catch { }
@@ -135,32 +148,133 @@ function roundRect(ctx, x, y, w, h, r) {
 function wrapText(ctx, text, x, y, maxWidth, lineHeight, maxLines = 1000, draw = true) {
     if (!text)
         return y;
-    const words = text.split('');
-    let line = '';
+    const IntlAny = globalThis.Intl;
+    const seg = (IntlAny === null || IntlAny === void 0 ? void 0 : IntlAny.Segmenter) ? new IntlAny.Segmenter('zh', { granularity: 'grapheme' }) : null;
+    const splitGraphemes = (value) => {
+        if (!value)
+            return [];
+        if (seg)
+            return Array.from(seg.segment(value), (item) => item.segment);
+        return Array.from(value);
+    };
+    const paragraphs = String(text).replace(/\r/g, '').split('\n');
     let linesCount = 0;
     let currentY = y;
-    for (let n = 0; n < words.length; n++) {
-        const testLine = line + words[n];
-        const metrics = ctx.measureText(testLine);
-        if (metrics.width > maxWidth && n > 0) {
-            if (draw)
-                ctx.fillText(line, x, currentY);
-            line = words[n];
-            currentY += lineHeight;
-            linesCount++;
+    const flush = (line) => {
+        if (draw && line)
+            ctx.fillText(line, x, currentY);
+        currentY += lineHeight;
+        linesCount++;
+    };
+    for (const paragraph of paragraphs) {
+        const tokens = paragraph.match(/https?:\/\/\S+|\s+|[^\s]/gu) || [];
+        let line = '';
+        for (const token of tokens) {
+            const next = line + token;
+            if (ctx.measureText(next).width <= maxWidth || !line) {
+                line = next;
+                continue;
+            }
+            flush(line.trimEnd());
             if (linesCount >= maxLines) {
                 if (draw)
-                    ctx.fillText(line + '...', x, currentY);
-                return currentY + lineHeight;
+                    ctx.fillText('...', x, currentY - lineHeight);
+                return currentY;
+            }
+            line = token.trimStart();
+            while (line && ctx.measureText(line).width > maxWidth) {
+                const glyphs = splitGraphemes(line);
+                const head = glyphs.shift();
+                let chunk = head || '';
+                while (glyphs.length && ctx.measureText(chunk + glyphs[0]).width <= maxWidth)
+                    chunk += glyphs.shift();
+                flush(chunk);
+                if (linesCount >= maxLines)
+                    return currentY;
+                line = glyphs.join('');
             }
         }
-        else {
-            line = testLine;
+        if (line) {
+            flush(line.trimEnd());
+            if (linesCount >= maxLines)
+                return currentY;
         }
     }
-    if (draw)
-        ctx.fillText(line, x, currentY);
-    return currentY + lineHeight;
+    return currentY;
+}
+function measureTableLayout(ctx, table, maxWidth, lineHeight, font, headerFont) {
+    const rows = Array.isArray(table === null || table === void 0 ? void 0 : table.rows) ? table.rows : [];
+    if (!rows.length)
+        return null;
+    const colCount = Math.max(...rows.map(r => r.length), 1);
+    const padX = 10;
+    const padY = 8;
+    const minCol = 80;
+    const maxCol = 320;
+    const colWidths = Array(colCount).fill(minCol);
+    for (let c = 0; c < colCount; c++) {
+        let maxW = minCol;
+        rows.forEach((row, rIdx) => {
+            var _a;
+            const text = String((_a = row[c]) !== null && _a !== void 0 ? _a : '');
+            ctx.font = rIdx === 0 ? headerFont : font;
+            maxW = Math.max(maxW, Math.min(maxCol, ctx.measureText(text).width + padX * 2));
+        });
+        colWidths[c] = maxW;
+    }
+    const rawW = colWidths.reduce((a, b) => a + b, 0);
+    if (rawW > maxWidth) {
+        const scale = maxWidth / rawW;
+        for (let i = 0; i < colWidths.length; i++)
+            colWidths[i] = Math.max(60, Math.floor(colWidths[i] * scale));
+    }
+    const rowHeights = rows.map((row, rIdx) => {
+        var _a;
+        let rowH = lineHeight + padY * 2;
+        for (let c = 0; c < colCount; c++) {
+            const text = String((_a = row[c]) !== null && _a !== void 0 ? _a : '');
+            const cw = Math.max(20, colWidths[c] - padX * 2);
+            ctx.font = rIdx === 0 ? headerFont : font;
+            const h = wrapText(ctx, text, 0, 0, cw, lineHeight, 1000, false);
+            rowH = Math.max(rowH, h + padY * 2);
+        }
+        return rowH;
+    });
+    return {
+        colWidths,
+        rowHeights,
+        totalW: colWidths.reduce((a, b) => a + b, 0),
+        totalH: rowHeights.reduce((a, b) => a + b, 0),
+        padX,
+        padY
+    };
+}
+function drawTable(ctx, table, x, y, maxWidth, lineHeight, font, headerFont, colors) {
+    var _a;
+    const layout = measureTableLayout(ctx, table, maxWidth, lineHeight, font, headerFont);
+    if (!layout)
+        return 0;
+    const { colWidths, rowHeights, totalW, padX, padY } = layout;
+    const rows = table.rows;
+    let cy = y;
+    for (let r = 0; r < rows.length; r++) {
+        let cx = x;
+        const rh = rowHeights[r];
+        for (let c = 0; c < colWidths.length; c++) {
+            const cw = colWidths[c];
+            ctx.fillStyle = r === 0 ? colors.headerBg : colors.cellBg;
+            ctx.fillRect(cx, cy, cw, rh);
+            ctx.strokeStyle = colors.border;
+            ctx.lineWidth = 1;
+            ctx.strokeRect(cx, cy, cw, rh);
+            ctx.fillStyle = colors.text;
+            ctx.font = r === 0 ? headerFont : font;
+            wrapText(ctx, String((_a = rows[r][c]) !== null && _a !== void 0 ? _a : ''), cx + padX, cy + padY, cw - padX * 2, lineHeight, 1000, true);
+            cx += cw;
+        }
+        cy += rh;
+    }
+    return layout.totalH;
 }
 function formatNumber(num) {
     if (num === null || num === undefined)
@@ -204,14 +318,53 @@ function fixUrl(url, base = '') {
         return base ? `${base}${url}` : url;
     return url;
 }
-async function loadImageSafe(url, timeout = 15000) {
+function extractImageUrl($, elem, base = '') {
+    var _a;
+    const attrs = [
+        $(elem).attr('data-original'),
+        $(elem).attr('data-lazy-src'),
+        $(elem).attr('data-src'),
+        $(elem).attr('src')
+    ];
+    const srcset = $(elem).attr('srcset');
+    if (srcset) {
+        const first = (_a = String(srcset).split(',')[0]) === null || _a === void 0 ? void 0 : _a.trim().split(' ')[0];
+        if (first)
+            attrs.push(first);
+    }
+    const style = $(elem).attr('style');
+    if (style) {
+        const m = String(style).match(/background-image:\s*url\((['"]?)([^'")]+)\1\)/i);
+        if (m === null || m === void 0 ? void 0 : m[2])
+            attrs.push(m[2]);
+    }
+    for (const item of attrs) {
+        const url = fixUrl(item, base);
+        if (url)
+            return url;
+    }
+    return null;
+}
+async function loadImageSafe(url, timeout = 15000, referer = '') {
     if (!url)
         return null;
+    if (!RENDER_IMAGE_FETCH_WITH_HEADERS)
+        return loadImage(url);
+    const resolvedReferer = referer || (() => {
+        try {
+            const u = new URL(url);
+            return `${u.protocol}//${u.host}/`;
+        }
+        catch {
+            return 'https://www.curseforge.com/';
+        }
+    })();
     // 1. 尝试直接加载 (保留 User-Agent 以防万一，同时检查 res.ok)
     try {
         const res = await fetchWithTimeout(url, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': resolvedReferer
             }
         }, timeout);
         // 如果返回 404/403 等非 2xx 状态，直接抛出异常进入 catch
@@ -221,6 +374,8 @@ async function loadImageSafe(url, timeout = 15000) {
         return await loadImage(buf);
     }
     catch (bufferErr) {
+        if (RENDER_DEBUG)
+            warnLog(`[Image] 主加载失败: ${url} -> ${bufferErr.message}`);
         // 2. 加载失败 (如下载成功但 skia 无法解码 WebP)，尝试备用链接
         const tryUrls = []; // 清空之前的无效尝试
         if (url.includes('.webp')) {
@@ -241,6 +396,7 @@ async function loadImageSafe(url, timeout = 15000) {
             }
             catch (e) {
                 lastErr = e;
+                warnLog(`[Image] 加载失败: ${u} -> ${e.message}`);
             }
         }
         // 如果都失败了，抛出异常（外部会捕获并绘制灰底）
@@ -322,47 +478,145 @@ async function parseContentToNodes(htmlContent, maxWidth, baseUrl = '') {
         return [];
     const $ = cheerio.load(htmlContent);
     const nodes = [];
-    async function traverse(elem) {
-        if (nodes.length > 120)
-            return; // 限制长度
-        const type = elem.type;
-        const tagName = elem.tagName || elem.name;
-        if (type === 'text') {
-            const text = elem.data.replace(/[\r\n\t]+/g, ' ').trim();
-            if (text)
-                nodes.push({ type: 'text', val: text, tag: 'p' });
+    const BLOCK_TAGS = new Set(['p', 'div', 'section', 'article', 'blockquote', 'ul', 'ol', 'pre']);
+    const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'svg']);
+    let buffer = '';
+    let bufferTag = 'p';
+    const normalizeText = (text) => String(text || '')
+        .replace(/\u00a0/g, ' ')
+        .replace(/[ \t\f\v]+/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    const pushTextNode = (text, tag = 'p') => {
+        const normalized = normalizeText(text);
+        if (!normalized)
+            return;
+        const last = nodes[nodes.length - 1];
+        if ((last === null || last === void 0 ? void 0 : last.type) === 'text' && last.tag === tag && tag !== 'h') {
+            last.val = `${last.val}\n${normalized}`;
+            return;
         }
-        else if (type === 'tag') {
-            if (tagName === 'img') {
-                const src = fixUrl($(elem).attr('src') || $(elem).attr('data-src'), baseUrl);
-                if (src)
-                    nodes.push({ type: 'img', src: src });
+        nodes.push({ type: 'text', val: normalized, tag });
+    };
+    const flushBuffer = () => {
+        if (!buffer)
+            return;
+        pushTextNode(buffer, bufferTag || 'p');
+        buffer = '';
+        bufferTag = 'p';
+    };
+    const appendBuffer = (text, tag = 'p') => {
+        if (!text)
+            return;
+        if (buffer && bufferTag !== tag)
+            flushBuffer();
+        bufferTag = tag;
+        buffer += text;
+    };
+    async function traverse(elem, preferredTag = 'p') {
+        if (nodes.length > 160)
+            return;
+        if (!elem)
+            return;
+        if (elem.type === 'text') {
+            appendBuffer(elem.data || '', preferredTag);
+            return;
+        }
+        if (elem.type !== 'tag')
+            return;
+        const tagName = String(elem.tagName || elem.name || '').toLowerCase();
+        if (!tagName || SKIP_TAGS.has(tagName))
+            return;
+        if (tagName === 'img') {
+            flushBuffer();
+            const src = extractImageUrl($, elem, baseUrl);
+            const alt = normalizeText($(elem).attr('alt') || '');
+            const isEmojiLikeAlt = !!alt && /^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F|\p{Emoji}\u200D)+$/u.test(alt);
+            const isEmojiLikeSrc = /emoji|smilies|twemoji|emot/i.test(src || '');
+            if ((isEmojiLikeAlt || isEmojiLikeSrc) && alt) {
+                appendBuffer(alt, preferredTag);
+                return;
             }
-            else if (['h1', 'h2', 'h3', 'h4'].includes(tagName)) {
-                const text = $(elem).text().trim();
-                if (text)
-                    nodes.push({ type: 'text', val: text, tag: 'h' });
-            }
-            else if (tagName === 'li') {
-                const text = $(elem).text().trim();
-                if (text)
-                    nodes.push({ type: 'text', val: '• ' + text, tag: 'li' });
-            }
-            else if (elem.children) {
+            if (src)
+                nodes.push({ type: 'img', src });
+            return;
+        }
+        if (tagName === 'br') {
+            appendBuffer('\n', preferredTag);
+            return;
+        }
+        if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tagName)) {
+            flushBuffer();
+            pushTextNode($(elem).text(), 'h');
+            return;
+        }
+        if (tagName === 'li') {
+            flushBuffer();
+            appendBuffer('', 'li');
+            if (elem.children) {
                 for (const child of elem.children)
-                    await traverse(child);
+                    await traverse(child, 'li');
             }
+            const text = normalizeText(buffer);
+            buffer = '';
+            bufferTag = 'p';
+            if (text)
+                nodes.push({ type: 'list-item', val: text });
+            return;
         }
+        if (tagName === 'table') {
+            flushBuffer();
+            const rows = [];
+            $(elem).find('tr').each((_, tr) => {
+                const row = [];
+                $(tr).find('th,td').each((__, cell) => {
+                    row.push(normalizeText($(cell).text()));
+                });
+                if (row.some(Boolean))
+                    rows.push(row);
+            });
+            if (rows.length)
+                nodes.push({ type: 'table', rows });
+            return;
+        }
+        if (tagName === 'a') {
+            const linkText = normalizeText($(elem).text());
+            const href = fixUrl($(elem).attr('href'), baseUrl);
+            if (linkText)
+                appendBuffer(linkText, preferredTag);
+            if (href && (!linkText || !linkText.includes(href)))
+                appendBuffer(` (${href})`, preferredTag);
+            return;
+        }
+        if (tagName === 'td' || tagName === 'th') {
+            appendBuffer(' ', preferredTag);
+            if (elem.children) {
+                for (const child of elem.children)
+                    await traverse(child, preferredTag);
+            }
+            appendBuffer(' | ', preferredTag);
+            return;
+        }
+        const isBlock = BLOCK_TAGS.has(tagName);
+        if (isBlock)
+            flushBuffer();
+        if (elem.children) {
+            for (const child of elem.children)
+                await traverse(child, preferredTag);
+        }
+        if (isBlock)
+            flushBuffer();
     }
     const body = $('body').length ? $('body')[0] : $.root()[0];
     if (body.children) {
         for (const child of body.children)
-            await traverse(child);
+            await traverse(child, 'p');
     }
+    flushBuffer();
     await Promise.all(nodes.map(async (node) => {
         if (node.type === 'img') {
             try {
-                const img = await loadImageSafe(node.src);
+                const img = await loadImageSafe(node.src, 15000, baseUrl || 'https://www.curseforge.com/');
                 node.imgObj = img;
                 const scale = Math.min(maxWidth / img.width, 1);
                 node.dw = img.width * scale;
@@ -409,6 +663,7 @@ const TRANSLATIONS = {
 };
 const getTranslation = (lang, key) => { var _a; return ((_a = TRANSLATIONS[lang || 'zh']) === null || _a === void 0 ? void 0 : _a[key]) || TRANSLATIONS.zh[key]; };
 async function drawProjectCard(data) {
+    var _a, _b;
     ensureFontsReady();
     const margin = 24;
     const gap = 32;
@@ -553,6 +808,16 @@ async function drawProjectCard(data) {
             if (isHeader)
                 contentH += 10; // 分割线间距
         }
+        else if (node.type === 'list-item') {
+            dummy.font = `500 15px "${font}"`;
+            const bulletW = 24;
+            const h = wrapText(dummy, node.val, 0, 0, Math.max(80, mainW - bulletW), 24, 10000, false);
+            contentH += h + 10;
+        }
+        else if (node.type === 'table') {
+            const tableH = ((_a = measureTableLayout(dummy, node, mainW, 22, `500 14px "${font}"`, `700 14px "${font}"`)) === null || _a === void 0 ? void 0 : _a.totalH) || 0;
+            contentH += tableH + 20;
+        }
         else if (node.type === 'img' && !node.error && node.imgObj) {
             let drawH = node.dh;
             if (drawH > 400)
@@ -585,6 +850,16 @@ async function drawProjectCard(data) {
                 if (isHeader)
                     h += 10;
                 nodeHeights.push(h);
+            }
+            else if (node.type === 'list-item') {
+                dummy.font = `500 15px "${font}"`;
+                const bulletW = 24;
+                const h = wrapText(dummy, node.val, 0, 0, Math.max(80, mainW - bulletW), 24, 10000, false);
+                nodeHeights.push(h + 10);
+            }
+            else if (node.type === 'table') {
+                const tableH = ((_b = measureTableLayout(dummy, node, mainW, 22, `500 14px "${font}"`, `700 14px "${font}"`)) === null || _b === void 0 ? void 0 : _b.totalH) || 0;
+                nodeHeights.push(tableH + 20);
             }
             else if (node.type === 'img' && !node.error && node.imgObj) {
                 let drawH = node.dh;
@@ -776,9 +1051,9 @@ async function drawProjectCard(data) {
         else if (type === 'links') {
             items.forEach(l => {
                 ctx.fillStyle = COLORS.link;
-                ctx.font = `600 14px "${font}"`;
-                ctx.fillText(l.name, rx, ry);
-                ry += 24;
+                ctx.font = `600 13px "${font}"`;
+                const linkText = (l === null || l === void 0 ? void 0 : l.url) ? `${l.name}: ${l.url}` : ((l === null || l === void 0 ? void 0 : l.name) || String(l || ''));
+                ry = wrapText(ctx, linkText, rx, ry, sidebarW, 20, 3, true) + 4;
             });
             ry += 20;
         }
@@ -830,7 +1105,7 @@ async function drawProjectCard(data) {
         if (node.type === 'text') {
             const isHeader = node.tag === 'h';
             const fontSize = isHeader ? 22 : 15;
-            ctx.font = `${isHeader ? '800' : 'normal'} ${fontSize}px "${font}"`;
+            ctx.font = `${isHeader ? '800' : '600'} ${fontSize}px "${font}"`;
             ctx.fillStyle = isHeader ? COLORS.textMain : '#333';
             // Header Decoration
             if (isHeader) {
@@ -843,6 +1118,19 @@ async function drawProjectCard(data) {
                 ctx.fillRect(lx, ly - 5, mainW, 1);
                 ly += 10;
             }
+        }
+        else if (node.type === 'list-item') {
+            const bulletX = lx + 4;
+            const textX = lx + 24;
+            ctx.fillStyle = '#333';
+            ctx.font = `600 15px "${font}"`;
+            ctx.fillText('•', bulletX, ly);
+            ctx.font = `600 15px "${font}"`;
+            ly = wrapText(ctx, node.val, textX, ly, Math.max(80, mainW - (textX - lx)), 24, 10000, true) + 10;
+        }
+        else if (node.type === 'table') {
+            const tableH = drawTable(ctx, node, lx, ly, mainW, 22, `600 14px "${font}"`, `800 14px "${font}"`, { headerBg: '#f5f7fa', cellBg: '#ffffff', border: '#e0e5ec', text: '#2b2f36' });
+            ly += tableH + 20;
         }
         else if (node.type === 'img' && !node.error && node.imgObj) {
             let drawH = node.dh;
@@ -895,6 +1183,7 @@ async function drawProjectCard(data) {
 }
 // ================= CurseForge 专用构图 =================
 async function drawProjectCardCF(data) {
+    var _a;
     const width = 1000;
     const margin = 24;
     const gap = 20;
@@ -1016,6 +1305,15 @@ async function drawProjectCardCF(data) {
             contentH += h + (isHeader ? 15 : 10);
             if (isHeader)
                 contentH += 8;
+        }
+        else if (node.type === 'list-item') {
+            dummy.font = `500 15px "${font}"`;
+            const h = wrapText(dummy, node.val, 0, 0, Math.max(80, mainW - 24), 24, 10000, false);
+            contentH += h + 10;
+        }
+        else if (node.type === 'table') {
+            const tableH = ((_a = measureTableLayout(dummy, node, mainW, 22, `500 14px "${font}"`, `700 14px "${font}"`)) === null || _a === void 0 ? void 0 : _a.totalH) || 0;
+            contentH += tableH + 16;
         }
         else if (node.type === 'img' && !node.error && node.imgObj) {
             let drawH = node.dh;
@@ -1205,9 +1503,9 @@ async function drawProjectCardCF(data) {
                 let currY = drawSidePanel(item.title);
                 item.data.forEach(l => {
                     ctx.fillStyle = C_TEXT_MAIN;
-                    ctx.font = `14px "${font}"`;
-                    ctx.fillText(`🔗 ${l.name}`, rightX, currY);
-                    currY += 24;
+                    ctx.font = `600 13px "${font}"`;
+                    const linkText = (l === null || l === void 0 ? void 0 : l.url) ? `${l.name}: ${l.url}` : ((l === null || l === void 0 ? void 0 : l.name) || String(l || ''));
+                    currY = wrapText(ctx, linkText, rightX, currY, sidebarW, 20, 3, true) + 4;
                 });
                 ry = currY + 20;
             }
@@ -1256,13 +1554,26 @@ async function drawProjectCardCF(data) {
         if (node.type === 'text') {
             const isHeader = node.tag === 'h';
             const fontSize = isHeader ? 22 : 15;
-            ctx.font = `${isHeader ? 'bold' : 'normal'} ${fontSize}px "${font}"`;
+            ctx.font = `${isHeader ? '800' : '600'} ${fontSize}px "${font}"`;
             ctx.fillStyle = isHeader ? '#ffffff' : '#d0d0d0';
             ctx.textBaseline = 'top';
             const lineHeight = Math.floor(fontSize * 1.5);
             ly = wrapText(ctx, node.val, leftX, ly, mainW, lineHeight, 10000, true) + (isHeader ? 15 : 10);
             if (isHeader)
                 ly += 8;
+        }
+        else if (node.type === 'list-item') {
+            const bulletX = leftX + 4;
+            const textX = leftX + 24;
+            ctx.fillStyle = '#d0d0d0';
+            ctx.font = `600 15px "${font}"`;
+            ctx.fillText('•', bulletX, ly);
+            ctx.font = `600 15px "${font}"`;
+            ly = wrapText(ctx, node.val, textX, ly, Math.max(80, mainW - (textX - leftX)), 24, 10000, true) + 10;
+        }
+        else if (node.type === 'table') {
+            const tableH = drawTable(ctx, node, leftX, ly, mainW, 22, `600 14px "${font}"`, `800 14px "${font}"`, { headerBg: '#2a2f36', cellBg: '#1c2026', border: '#3a4048', text: '#d8dde6' });
+            ly += tableH + 16;
         }
         else if (node.type === 'img' && !node.error && node.imgObj) {
             let drawH = node._drawH || node.dh;
@@ -2070,25 +2381,21 @@ async function searchCurseForge(query, type, apiKey, timeout, gameId = 432) {
 }
 // ================= Apply =================
 function apply(ctx, config) {
-    var _a, _b;
+    var _a, _b, _c, _d;
     const logger = ctx.logger('mc-search');
-    const canvasService = (config === null || config === void 0 ? void 0 : config.canvas) || ctx.canvas;
+    RENDER_DEBUG = !!(config === null || config === void 0 ? void 0 : config.debug);
+    RENDER_IMAGE_FETCH_WITH_HEADERS = ((_b = (_a = config === null || config === void 0 ? void 0 : config.render) === null || _a === void 0 ? void 0 : _a.image) === null || _b === void 0 ? void 0 : _b.fetchWithHeaders) !== false;
+    const canvasService = config === null || config === void 0 ? void 0 : config.canvas;
     if (!(canvasService === null || canvasService === void 0 ? void 0 : canvasService.createCanvas) || !(canvasService === null || canvasService === void 0 ? void 0 : canvasService.loadImage)) {
-        throw new Error('缺少可用 canvas 实现，请检查插件安装');
+        logger.warn('缺少 @napi-rs/canvas，cf/mr 指令图片功能已禁用。请在 Koishi 实例目录执行: npm i @napi-rs/canvas');
+        return;
     }
     createCanvas = (w, h) => {
         const width = Math.max(1, Number(w) || 1);
         const height = Math.max(1, Number(h) || 1);
-        let c;
-        try {
-            c = canvasService.createCanvas(width, height);
-        }
-        catch { }
+        const c = canvasService.createCanvas(width, height);
         if (!c || typeof c.getContext !== 'function') {
-            c = napiCanvas.createCanvas(width, height);
-        }
-        if (!c || typeof c.getContext !== 'function') {
-            throw new Error('canvas 服务异常：无法创建 Canvas 实例');
+            throw new Error('canvas 服务异常：Canvas 无效');
         }
         return c;
     };
@@ -2259,8 +2566,8 @@ function apply(ctx, config) {
         }
         return next();
     });
-    const cfPrefix = ((_a = config === null || config === void 0 ? void 0 : config.prefixes) === null || _a === void 0 ? void 0 : _a.cf) || 'cf';
-    const mrPrefix = ((_b = config === null || config === void 0 ? void 0 : config.prefixes) === null || _b === void 0 ? void 0 : _b.mr) || 'mr';
+    const cfPrefix = ((_c = config === null || config === void 0 ? void 0 : config.prefixes) === null || _c === void 0 ? void 0 : _c.cf) || 'cf';
+    const mrPrefix = ((_d = config === null || config === void 0 ? void 0 : config.prefixes) === null || _d === void 0 ? void 0 : _d.mr) || 'mr';
     ctx.command(`${mrPrefix}.helpme`, '显示 Modrinth 搜索帮助')
         .option('en', '-e, --en Use English')
         .action(({ options }) => {

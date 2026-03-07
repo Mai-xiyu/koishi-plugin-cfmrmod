@@ -41,6 +41,53 @@ async function fetchJson(url, timeout = 15000) {
         clearTimeout(id);
     }
 }
+function toMarkdownLike(input) {
+    const text = String(input || '');
+    if (!text)
+        return '';
+    const looksLikeHtml = /<\/?[a-z][\s\S]*>/i.test(text);
+    if (!looksLikeHtml)
+        return text.trim();
+    return text
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/p>/gi, '\n\n')
+        .replace(/<li[^>]*>/gi, '\n- ')
+        .replace(/<\/li>/gi, '')
+        .replace(/<\/h[1-6]>/gi, '\n\n')
+        .replace(/<h[1-6][^>]*>/gi, '\n## ')
+        .replace(/<[^>]+>/g, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+async function fetchCurseForgeChangelogOfficial(projectId, fileId, apiKey, timeout) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+    try {
+        const res = await fetch(`${CF_OFFICIAL_BASE}/mods/${projectId}/files/${fileId}/changelog`, {
+            headers: {
+                'Accept': 'application/json',
+                'x-api-key': String(apiKey).trim(),
+            },
+            signal: controller.signal,
+        });
+        if (!res.ok)
+            throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        return toMarkdownLike((json === null || json === void 0 ? void 0 : json.data) || (json === null || json === void 0 ? void 0 : json.changelog) || '');
+    }
+    finally {
+        clearTimeout(id);
+    }
+}
+async function fetchCurseForgeChangelogMirror(projectId, fileId, timeout) {
+    try {
+        const json = await fetchJson(`${CF_MIRROR_BASE}/mods/${projectId}/files/${fileId}/changelog`, timeout);
+        return toMarkdownLike((json === null || json === void 0 ? void 0 : json.data) || (json === null || json === void 0 ? void 0 : json.changelog) || '');
+    }
+    catch {
+        return '';
+    }
+}
 function apply(ctx, config, options) {
     const logger = ctx.logger('cfmr-notify');
     ctx.model.extend('cfmrmod_notify_sub', {
@@ -422,10 +469,12 @@ function apply(ctx, config, options) {
                     const latest = (_b = files === null || files === void 0 ? void 0 : files.data) === null || _b === void 0 ? void 0 : _b[0];
                     if (!latest)
                         return null;
+                    const changelogText = await fetchCurseForgeChangelogOfficial(projectId, String(latest.id), String(apiKey), timeout)
+                        .catch(() => toMarkdownLike(latest.changelog || ''));
                     return {
                         versionId: String(latest.id),
                         version: latest.displayName || latest.fileName || String(latest.id),
-                        changelog: latest.changelog || '',
+                        changelog: changelogText || toMarkdownLike(latest.changelog || ''),
                         downloads: latest.downloadCount,
                         datePublished: latest.fileDate || null,
                         releaseType: latest.releaseType,
@@ -448,10 +497,12 @@ function apply(ctx, config, options) {
         const latest = (_c = files === null || files === void 0 ? void 0 : files.data) === null || _c === void 0 ? void 0 : _c[0];
         if (!latest)
             return null;
+        const changelogText = await fetchCurseForgeChangelogMirror(projectId, String(latest.id), timeout)
+            .catch(() => toMarkdownLike(latest.changelog || ''));
         return {
             versionId: String(latest.id),
             version: latest.displayName || latest.fileName || String(latest.id),
-            changelog: latest.changelog || '',
+            changelog: changelogText || toMarkdownLike(latest.changelog || ''),
             downloads: latest.downloadCount,
             datePublished: latest.fileDate || null,
             releaseType: latest.releaseType,

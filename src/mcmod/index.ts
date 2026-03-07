@@ -6,6 +6,12 @@ const { h, Schema } = require('koishi');
 let createCanvas;
 let loadImage;
 let registerFont;
+let RENDER_DEBUG = false;
+let RENDER_TWEMOJI = true;
+let RENDER_TWEMOJI_CDN = 'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72';
+let RENDER_IMAGE_FETCH_WITH_HEADERS = true;
+const imageBufferCache = new Map();
+const twemojiImageCache = new Map();
 
 async function toImageSrc(input) {
   const value = (input && typeof input.then === 'function') ? await input : input;
@@ -74,6 +80,21 @@ function getHeaders(referer = 'https://mcmod.cn/') {
   return headers;
 }
 
+function getImageHeaders(url, referer = 'https://mcmod.cn/') {
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Referer': referer,
+    'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+  };
+  try {
+    const host = new URL(url).hostname;
+    if (globalCookie && /(^|\.)mcmod\.cn$/i.test(host)) {
+      headers['Cookie'] = globalCookie;
+    }
+  } catch {}
+  return headers;
+}
+
 // 确保 Cookie 有效（自动刷新）
 async function ensureValidCookie() {
   const now = Date.now();
@@ -109,6 +130,185 @@ function fixUrl(url) {
     return url;
 }
 
+function extractImageUrl(node) {
+  if (!node || !node.attribs) return null;
+  const attrs = node.attribs;
+  const candidates = [
+    attrs['data-original'],
+    attrs['data-lazy-src'],
+    attrs['data-src'],
+    attrs['src']
+  ].filter(Boolean);
+  if (attrs['srcset']) {
+    const first = String(attrs['srcset']).split(',')[0]?.trim().split(' ')[0];
+    if (first) candidates.push(first);
+  }
+  if (attrs['style']) {
+    const m = String(attrs['style']).match(/background-image:\s*url\((['"]?)([^'")]+)\1\)/i);
+    if (m?.[2]) candidates.push(m[2]);
+  }
+  for (const c of candidates) {
+    const url = fixUrl(String(c).trim());
+    if (url) return url;
+  }
+  return null;
+}
+
+function parseGalleryFromTable($, tableNode) {
+  const items = [];
+  $(tableNode).find('td').each((_, td) => {
+    const imgNode = $(td).find('img').first()[0];
+    if (!imgNode) return;
+    const src = extractImageUrl(imgNode);
+    if (!src) return;
+    const caption =
+      cleanText($(td).find('.figcaption, figcaption').first().text()) ||
+      cleanText($(td).find('[class*=\"caption\"]').first().text()) ||
+      cleanText($(imgNode).attr('alt')) ||
+      '';
+    items.push({ src: fixUrl(src), caption });
+  });
+  return items;
+}
+
+async function loadImageWithHeaders(url, referer = BASE_URL, timeout = 15000) {
+  if (!url) throw new Error('empty image url');
+  if (!RENDER_IMAGE_FETCH_WITH_HEADERS) return loadImage(url);
+  const cacheKey = `${url}::${referer}::${globalCookie || ''}`;
+  const cached = imageBufferCache.get(cacheKey);
+  if (cached) return loadImage(cached);
+
+  const tried = [];
+  const tryUrls = [url];
+  const lower = String(url).toLowerCase();
+  if (lower.includes('.webp') || lower.includes('format=webp')) {
+    tryUrls.push(`https://wsrv.nl/?url=${encodeURIComponent(url)}&output=png`);
+  }
+  if (!tryUrls.some(u => u.includes('wsrv.nl'))) {
+    tryUrls.push(`https://wsrv.nl/?url=${encodeURIComponent(url)}`);
+  }
+
+  let lastErr = null;
+  for (const attemptUrl of tryUrls) {
+    if (tried.includes(attemptUrl)) continue;
+    tried.push(attemptUrl);
+    for (let i = 0; i < 2; i++) {
+      const fetchModes = [
+        { name: 'direct', opts: { agent: false } },
+        { name: 'default', opts: {} },
+      ];
+      for (const mode of fetchModes) {
+        try {
+          const res = await fetchWithTimeout(
+            attemptUrl,
+            { headers: getImageHeaders(attemptUrl, referer), ...(mode.opts as any) },
+            timeout
+          );
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const buf = await res.buffer();
+          const img = await loadImage(buf);
+          imageBufferCache.set(cacheKey, buf);
+          return img;
+        } catch (e) {
+          lastErr = e;
+          if (RENDER_DEBUG) console.warn(`[mcmod] image fail (${i + 1}/2, ${mode.name}): ${attemptUrl} -> ${e.message}`);
+        }
+      }
+    }
+  }
+  throw lastErr || new Error('loadImageWithHeaders failed');
+}
+
+function emojiToTwemojiUrl(emoji) {
+  const codepoints = [];
+  for (const ch of Array.from(String(emoji || '')) as string[]) {
+    const cp = ch.codePointAt(0);
+    if (!cp) continue;
+    if (cp === 0xfe0f) continue;
+    codepoints.push(cp.toString(16));
+  }
+  if (!codepoints.length) return null;
+  return `${RENDER_TWEMOJI_CDN}/${codepoints.join('-')}.png`;
+}
+
+async function loadTwemojiImage(emoji) {
+  if (!RENDER_TWEMOJI) return null;
+  const key = String(emoji || '');
+  if (!key) return null;
+  if (twemojiImageCache.has(key)) return twemojiImageCache.get(key);
+  const p = (async () => {
+    const url = emojiToTwemojiUrl(key);
+    if (!url) return null;
+    try {
+      return await loadImageWithHeaders(url, RENDER_TWEMOJI_CDN, 12000);
+    } catch {
+      return null;
+    }
+  })();
+  twemojiImageCache.set(key, p);
+  return p;
+}
+
+function splitTextUnits(text) {
+  const emojiRegex = /\p{Extended_Pictographic}/u;
+  const IntlAny = globalThis.Intl as any;
+  const seg = IntlAny?.Segmenter ? new IntlAny.Segmenter('zh', { granularity: 'grapheme' }) : null;
+  const graphemes = seg ? Array.from((seg as any).segment(String(text || '')), (s: any) => s.segment) : Array.from(String(text || ''));
+  return graphemes.map((g) => ({ type: emojiRegex.test(g) ? 'emoji' : 'text', val: g }));
+}
+
+async function drawTextWithTwemoji(ctx, text, x, y, maxWidth, lineHeight, maxLines = 1000, draw = true) {
+  if (!text) return y;
+  const paragraphs = String(text).replace(/\r/g, '').split('\n');
+  const emojiSize = Math.max(14, Math.floor(lineHeight * 0.9));
+  let currentY = y;
+  let lines = 0;
+
+  const drawLine = async (units) => {
+    let cx = x;
+    for (const unit of units) {
+      if (unit.type === 'emoji') {
+        if (draw) {
+          const img = await loadTwemojiImage(unit.val);
+          if (img) ctx.drawImage(img, cx, currentY + Math.max(0, Math.floor((lineHeight - emojiSize) / 2)), emojiSize, emojiSize);
+          else ctx.fillText(unit.val, cx, currentY);
+        }
+        cx += emojiSize;
+      } else {
+        if (draw) ctx.fillText(unit.val, cx, currentY);
+        cx += ctx.measureText(unit.val).width;
+      }
+    }
+    currentY += lineHeight;
+    lines++;
+  };
+
+  for (const paragraph of paragraphs) {
+    const units = splitTextUnits(paragraph);
+    let line = [];
+    let lineW = 0;
+    for (const unit of units) {
+      const w = unit.type === 'emoji' ? emojiSize : ctx.measureText(unit.val).width;
+      if (lineW + w > maxWidth && line.length) {
+        await drawLine(line);
+        if (lines >= maxLines) return currentY;
+        line = [];
+        lineW = 0;
+      }
+      line.push(unit);
+      lineW += w;
+    }
+    if (line.length) {
+      await drawLine(line);
+      if (lines >= maxLines) return currentY;
+    } else {
+      currentY += lineHeight;
+      lines++;
+    }
+  }
+  return currentY;
+}
+
 function roundRect(ctx, x, y, w, h, r) {
   if (w < 2 * r) r = w / 2;
   if (h < 2 * r) r = h / 2;
@@ -123,26 +323,129 @@ function roundRect(ctx, x, y, w, h, r) {
 
 function wrapText(ctx, text, x, y, maxWidth, lineHeight, maxLines = 1000, draw = true) {
   if (!text) return y;
-  const words = text.split('');
-  let line = '';
+  const IntlAny = globalThis.Intl as any;
+  const seg = IntlAny?.Segmenter ? new IntlAny.Segmenter('zh', { granularity: 'grapheme' }) : null;
+  const splitGraphemes = (value) => {
+    if (!value) return [];
+    if (seg) return Array.from((seg as any).segment(value), (item: any) => item.segment);
+    return Array.from(value);
+  };
+  const paragraphs = String(text).replace(/\r/g, '').split('\n');
   let linesCount = 0;
   let currentY = y;
 
-  for (let n = 0; n < words.length; n++) {
-    const testLine = line + words[n];
-    const metrics = ctx.measureText(testLine);
-    if (metrics.width > maxWidth && n > 0) {
-      if (draw) ctx.fillText(line, x, currentY);
-      line = words[n];
-      currentY += lineHeight;
-      linesCount++;
+  const flush = (line) => {
+    if (draw && line) ctx.fillText(line, x, currentY);
+    currentY += lineHeight;
+    linesCount++;
+  };
+
+  for (const paragraph of paragraphs) {
+    const tokens = paragraph.match(/https?:\/\/\S+|\s+|[^\s]/gu) || [];
+    let line = '';
+    for (const token of tokens) {
+      const next = line + token;
+      if (ctx.measureText(next).width <= maxWidth || !line) {
+        line = next;
+        continue;
+      }
+
+      flush(line.trimEnd());
+      if (linesCount >= maxLines) return currentY;
+
+      line = token.trimStart();
+      while (line && ctx.measureText(line).width > maxWidth) {
+        const glyphs = splitGraphemes(line);
+        const head = glyphs.shift();
+        let chunk = head || '';
+        while (glyphs.length && ctx.measureText(chunk + glyphs[0]).width <= maxWidth) chunk += glyphs.shift();
+        flush(chunk);
+        if (linesCount >= maxLines) return currentY;
+        line = glyphs.join('');
+      }
+    }
+    if (line) {
+      flush(line.trimEnd());
       if (linesCount >= maxLines) return currentY;
     } else {
-      line = testLine;
+      currentY += lineHeight;
     }
   }
-  if (draw) ctx.fillText(line, x, currentY);
-  return currentY + lineHeight;
+  return currentY;
+}
+
+function measureTableLayout(ctx, table, maxWidth, lineHeight, font, headerFont) {
+  const rows = Array.isArray(table?.rows) ? table.rows : [];
+  if (!rows.length) return null;
+  const colCount = Math.max(...rows.map(r => r.length), 1);
+  const padX = 10;
+  const padY = 8;
+  const minCol = 80;
+  const maxCol = 320;
+  const colWidths = Array(colCount).fill(minCol);
+
+  for (let c = 0; c < colCount; c++) {
+    let maxW = minCol;
+    rows.forEach((row, rIdx) => {
+      const text = String(row[c] ?? '');
+      ctx.font = rIdx === 0 ? headerFont : font;
+      maxW = Math.max(maxW, Math.min(maxCol, ctx.measureText(text).width + padX * 2));
+    });
+    colWidths[c] = maxW;
+  }
+
+  const rawW = colWidths.reduce((a, b) => a + b, 0);
+  if (rawW > maxWidth) {
+    const scale = maxWidth / rawW;
+    for (let i = 0; i < colWidths.length; i++) colWidths[i] = Math.max(60, Math.floor(colWidths[i] * scale));
+  }
+
+  const rowHeights = rows.map((row, rIdx) => {
+    let rowH = lineHeight + padY * 2;
+    for (let c = 0; c < colCount; c++) {
+      const text = String(row[c] ?? '');
+      const cw = Math.max(20, colWidths[c] - padX * 2);
+      ctx.font = rIdx === 0 ? headerFont : font;
+      const h = wrapText(ctx, text, 0, 0, cw, lineHeight, 1000, false);
+      rowH = Math.max(rowH, h + padY * 2);
+    }
+    return rowH;
+  });
+
+  return {
+    colWidths,
+    rowHeights,
+    totalW: colWidths.reduce((a, b) => a + b, 0),
+    totalH: rowHeights.reduce((a, b) => a + b, 0),
+    padX,
+    padY
+  };
+}
+
+function drawTable(ctx, table, x, y, maxWidth, lineHeight, font, headerFont, colors) {
+  const layout = measureTableLayout(ctx, table, maxWidth, lineHeight, font, headerFont);
+  if (!layout) return 0;
+  const { colWidths, rowHeights, padX, padY } = layout;
+  const rows = table.rows;
+  let cy = y;
+  for (let r = 0; r < rows.length; r++) {
+    let cx = x;
+    const rh = rowHeights[r];
+    for (let c = 0; c < colWidths.length; c++) {
+      const cw = colWidths[c];
+      ctx.fillStyle = r === 0 ? colors.headerBg : colors.cellBg;
+      ctx.fillRect(cx, cy, cw, rh);
+      ctx.strokeStyle = colors.border;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(cx, cy, cw, rh);
+      ctx.fillStyle = colors.text;
+      ctx.font = r === 0 ? headerFont : font;
+      wrapText(ctx, String(rows[r][c] ?? ''), cx + padX, cy + padY, cw - padX * 2, lineHeight, 1000, true);
+      cx += cw;
+    }
+    cy += rh;
+  }
+  return layout.totalH;
 }
 
 // ================= 字体注册 =================
@@ -168,8 +471,11 @@ function initFont(preferredPath, logger, registerFontFn) {
 
   const candidates = [
     'C:\\Windows\\Fonts\\msyh.ttc', 'C:\\Windows\\Fonts\\msyh.ttf', 'C:\\Windows\\Fonts\\simhei.ttf',
+    'C:\\Windows\\Fonts\\seguiemj.ttf',
     '/usr/share/fonts/truetype/noto/NotoSansSC-Regular.otf', '/usr/share/fonts/noto/NotoSansSC-Regular.otf',
-    '/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc', '/System/Library/Fonts/PingFang.ttc'
+    '/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf', '/usr/share/fonts/noto/NotoColorEmoji.ttf',
+    '/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc', '/System/Library/Fonts/PingFang.ttc',
+    '/System/Library/Fonts/Apple Color Emoji.ttc'
   ];
   for (const p of candidates) {
     if (tryRegister(p, '系统字体')) return true;
@@ -447,54 +753,122 @@ async function drawModCard(url) {
     // 简介解析
     const descRoot = $('.common-text').first();
     const descNodes = [];
-    let currentParagraph = '';
+    const BLOCK_TAGS = new Set(['p', 'div', 'section', 'article', 'blockquote', 'ul', 'ol']);
+    const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'svg']);
+    let paragraphBuffer = '';
+    let paragraphTag = 'p';
 
-    function flushParagraph() {
-      const text = currentParagraph.replace(/\s+/g, ' ').trim();
-      if (text.length > 0) {
-        descNodes.push({ type: 't', val: text, tag: 'p' });
+    const normalizeText = (text) => String(text || '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t\f\v]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+
+    const pushTextNode = (text, tag = 'p') => {
+      const normalized = normalizeText(text);
+      if (!normalized) return;
+      const last = descNodes[descNodes.length - 1];
+      if (last?.type === 't' && last.tag === tag && tag !== 'h') {
+        last.val = `${last.val}\n${normalized}`;
+        return;
       }
-      currentParagraph = '';
-    }
+      descNodes.push({ type: 't', val: normalized, tag });
+    };
 
-    function parseNode(node, depth = 0) {
-      if (depth > 10) return;
+    const flushParagraph = () => {
+      if (!paragraphBuffer) return;
+      pushTextNode(paragraphBuffer, paragraphTag || 'p');
+      paragraphBuffer = '';
+      paragraphTag = 'p';
+    };
+
+    const appendText = (text, tag = 'p') => {
+      if (!text) return;
+      if (paragraphBuffer && paragraphTag !== tag) flushParagraph();
+      paragraphTag = tag;
+      paragraphBuffer += text;
+    };
+
+    function parseNode(node, depth = 0, preferredTag = 'p') {
+      if (depth > 12) return;
+      if (!node) return;
+
       if (node.type === 'text') {
-        currentParagraph += (node.data || '').replace(/[\r\n\t]+/g, ' ');
-      } else if (node.type === 'tag') {
-        const tagName = node.name;
-        if (tagName === 'img') {
-          flushParagraph();
-          const src = node.attribs['data-src'] || node.attribs['src'];
-          if (src && !src.includes('icon') && !src.includes('smilies') && !src.includes('loading')) descNodes.push({ type: 'i', src: fixUrl(src) });
-        } else if (['h1','h2','h3','h4','h5','h6'].includes(tagName)) {
-          flushParagraph();
-          const text = cleanText($(node).text());
-          if (text && text.length > 1) descNodes.push({ type: 't', val: text, tag: 'h' });
-        } else if (tagName === 'li') {
-          flushParagraph();
-          currentParagraph += '• ';
-          if (node.children) node.children.forEach(child => parseNode(child, depth + 1));
-          flushParagraph();
-        } else if (tagName === 'br') {
-          flushParagraph();
-          descNodes.push({ type: 'br' });
-        } else if (['p','div','section','article'].includes(tagName)) {
-          flushParagraph();
-          if (node.children) node.children.forEach(child => parseNode(child, depth + 1));
-          flushParagraph();
-        } else if (tagName === 'tr') {
-          flushParagraph();
-          if (node.children) node.children.forEach(child => parseNode(child, depth + 1));
-          flushParagraph();
-        } else if (tagName === 'td' || tagName === 'th') {
-          currentParagraph += ' ';
-          if (node.children) node.children.forEach(child => parseNode(child, depth + 1));
-          currentParagraph += '  ';
-        } else {
-          if (node.children) node.children.forEach(child => parseNode(child, depth + 1));
-        }
+        appendText(node.data || '', preferredTag);
+        return;
       }
+      if (node.type !== 'tag') return;
+
+      const tagName = String(node.name || '').toLowerCase();
+      if (!tagName || SKIP_TAGS.has(tagName)) return;
+
+      if (tagName === 'img') {
+        const src = extractImageUrl(node);
+        const alt = normalizeText(node.attribs.alt || '');
+        const isEmojiLikeAlt = !!alt && /^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F|\p{Emoji}\u200D)+$/u.test(alt);
+        const isEmojiLikeSrc = /emoji|smilies|twemoji|emot/i.test(src || '');
+        if ((isEmojiLikeAlt || isEmojiLikeSrc) && alt) {
+          appendText(alt, preferredTag);
+          return;
+        }
+        flushParagraph();
+        if (src && !src.includes('icon') && !src.includes('loading')) {
+          descNodes.push({ type: 'i', src: fixUrl(src) });
+        }
+        return;
+      }
+
+      if (tagName === 'br') {
+        appendText('\n', preferredTag);
+        return;
+      }
+
+      if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tagName)) {
+        flushParagraph();
+        pushTextNode($(node).text(), 'h');
+        return;
+      }
+
+      if (tagName === 'li') {
+        flushParagraph();
+        appendText('', 'li');
+        if (node.children) node.children.forEach(child => parseNode(child, depth + 1, 'li'));
+        const text = normalizeText(paragraphBuffer);
+        paragraphBuffer = '';
+        paragraphTag = 'p';
+        if (text) descNodes.push({ type: 'li', val: text });
+        return;
+      }
+
+      if (tagName === 'table') {
+        flushParagraph();
+        const galleryItems = parseGalleryFromTable($, node);
+        if (galleryItems.length) {
+          descNodes.push({ type: 'g', items: galleryItems });
+          return;
+        }
+        const rows = [];
+        $(node).find('tr').each((_, tr) => {
+          const row = [];
+          $(tr).find('th,td').each((__, cell) => row.push(normalizeText($(cell).text())));
+          if (row.some(Boolean)) rows.push(row);
+        });
+        if (rows.length) descNodes.push({ type: 'tb', rows });
+        return;
+      }
+
+      if (tagName === 'a') {
+        const text = normalizeText($(node).text());
+        const href = fixUrl(node.attribs.href);
+        if (text) appendText(text, preferredTag);
+        if (href && (!text || !text.includes(href))) appendText(` (${href})`, preferredTag);
+        return;
+      }
+
+      const isBlock = BLOCK_TAGS.has(tagName);
+      if (isBlock) flushParagraph();
+      if (node.children) node.children.forEach(child => parseNode(child, depth + 1, preferredTag));
+      if (isBlock) flushParagraph();
     }
     if (descRoot.length) {
       descRoot[0].children.forEach(child => parseNode(child, 0));
@@ -576,9 +950,45 @@ async function drawModCard(url) {
         const lh = isHeader ? 32 : 26;
         const totalNodeHeight = wrapText(dummy, node.val, 0, 0, contentW, lh, 5000, false);
         descH += totalNodeHeight + (isHeader ? 15 : 10);
+      } else if (node.type === 'li') {
+        dummy.font = `600 16px "${font}"`;
+        const h = wrapText(dummy, node.val, 0, 0, Math.max(80, contentW - 24), 26, 5000, false);
+        descH += h + 10;
+      } else if (node.type === 'tb') {
+        const tableH = measureTableLayout(
+          dummy,
+          node,
+          contentW,
+          22,
+          `600 14px "${font}"`,
+          `800 14px "${font}"`
+        )?.totalH || 0;
+        descH += tableH + 16;
+      } else if (node.type === 'g') {
+        for (const item of node.items || []) {
+          try {
+            const img = await loadImageWithHeaders(item.src, BASE_URL);
+            item.imgCache = img;
+            let scale = Math.min(contentW / img.width, 1);
+            let dw = img.width * scale;
+            let dh = img.height * scale;
+            if (dh > 460) {
+              const r = 460 / dh;
+              dh = 460;
+              dw = dw * r;
+            }
+            item.dw = dw;
+            item.dh = dh;
+            const captionH = item.caption ? wrapText(dummy, item.caption, 0, 0, contentW, 22, 5, false) : 0;
+            descH += dh + captionH + 26;
+          } catch (e) {
+            item.error = true;
+            descH += 110;
+          }
+        }
       } else if (node.type === 'i') {
         try {
-          const img = await loadImage(node.src);
+            const img = await loadImageWithHeaders(node.src, BASE_URL);
           node.imgCache = img; // 缓存供绘制时使用
           const maxH = 400;
           let r = Math.min(contentW / img.width, maxH / img.height);
@@ -676,7 +1086,7 @@ async function drawModCard(url) {
     const iconSize = 80;
     if (iconUrl) {
       try {
-        const img = await loadImage(iconUrl);
+          const img = await loadImageWithHeaders(iconUrl, BASE_URL);
         ctx.save();
         roundRect(ctx, cx, dy, iconSize, iconSize, 12); ctx.clip();
         ctx.drawImage(img, cx, dy, iconSize, iconSize);
@@ -704,7 +1114,7 @@ async function drawModCard(url) {
       let ax = titleX;
       for (const a of authors.slice(0, 3)) { // 最多显示3个作者
         ctx.save(); ctx.beginPath(); ctx.arc(ax + 12, subY + 12, 12, 0, Math.PI * 2); ctx.clip();
-        if (a.i) { try { const img = await loadImage(a.i); ctx.drawImage(img, ax, subY, 24, 24); } catch(e) { ctx.fillStyle='#ccc'; ctx.fill(); } }
+        if (a.i) { try { const img = await loadImageWithHeaders(a.i, BASE_URL); ctx.drawImage(img, ax, subY, 24, 24); } catch(e) { ctx.fillStyle='#ccc'; ctx.fill(); } }
         else { ctx.fillStyle='#ccc'; ctx.fill(); }
         ctx.restore();
             
@@ -719,7 +1129,7 @@ async function drawModCard(url) {
     // 3. Cover Image
     if (coverUrl) {
       try {
-        const img = await loadImage(coverUrl);
+        const img = await loadImageWithHeaders(coverUrl, BASE_URL);
         const coverW = contentW;
         const coverH_Actual = 280;
         // Crop fit
@@ -812,14 +1222,68 @@ async function drawModCard(url) {
       for (const node of descNodes) {
         if (node.type === 't') {
           const isHeader = node.tag === 'h';
-          ctx.font = `${isHeader ? 'bold' : ''} ${isHeader ? 22 : 16}px "${font}"`;
+          ctx.font = `${isHeader ? '800' : '600'} ${isHeader ? 22 : 16}px "${font}"`;
           ctx.fillStyle = isHeader ? '#2c3e50' : '#444';
           const lh = isHeader ? 32 : 26;
-          dy = wrapText(ctx, node.val, cx, dy, contentW, lh, 5000, true) + (isHeader ? 15 : 10);
+          dy = await drawTextWithTwemoji(ctx, node.val, cx, dy, contentW, lh, 5000, true) + (isHeader ? 15 : 10);
+        } else if (node.type === 'li') {
+          const bulletX = cx + 4;
+          const textX = cx + 24;
+          ctx.fillStyle = '#444';
+          ctx.font = `600 16px "${font}"`;
+          ctx.fillText('•', bulletX, dy);
+          ctx.font = `600 16px "${font}"`;
+          dy = await drawTextWithTwemoji(ctx, node.val, textX, dy, Math.max(80, contentW - (textX - cx)), 26, 5000, true) + 10;
+        } else if (node.type === 'tb') {
+          const tableH = drawTable(
+            ctx,
+            node,
+            cx,
+            dy,
+            contentW,
+            22,
+            `600 14px "${font}"`,
+            `800 14px "${font}"`,
+            { headerBg: 'rgba(52,152,219,0.12)', cellBg: 'rgba(255,255,255,0.7)', border: 'rgba(52,152,219,0.25)', text: '#2f3742' }
+          );
+          dy += tableH + 16;
+        } else if (node.type === 'g') {
+          for (const item of node.items || []) {
+            if (item.error || !item.imgCache) {
+              ctx.fillStyle = 'rgba(0,0,0,0.06)';
+              roundRect(ctx, cx, dy, contentW, 90, 8); ctx.fill();
+              ctx.fillStyle = '#999';
+              ctx.font = `600 14px "${font}"`;
+              ctx.fillText('Image failed to load', cx + 16, dy + 38);
+              dy += 110;
+              continue;
+            }
+            const dx = cx + (contentW - item.dw) / 2;
+            ctx.save();
+            roundRect(ctx, dx, dy, item.dw, item.dh, 8); ctx.clip();
+            ctx.drawImage(item.imgCache, dx, dy, item.dw, item.dh);
+            ctx.restore();
+            dy += item.dh + 8;
+            if (item.caption) {
+              ctx.fillStyle = '#666';
+              ctx.font = `600 14px "${font}"`;
+              dy = await drawTextWithTwemoji(ctx, item.caption, cx, dy, contentW, 22, 5, true) + 12;
+            } else {
+              dy += 8;
+            }
+          }
         } else if (node.type === 'i') {
-          if (node.imgFailed) continue;
+          if (node.imgFailed) {
+            ctx.fillStyle = 'rgba(0,0,0,0.06)';
+            roundRect(ctx, cx, dy, contentW, 90, 8); ctx.fill();
+            ctx.fillStyle = '#999';
+            ctx.font = `600 14px "${font}"`;
+            ctx.fillText('Image failed to load', cx + 16, dy + 38);
+            dy += 110;
+            continue;
+          }
           try {
-            const img = node.imgCache || await loadImage(node.src);
+            const img = node.imgCache || await loadImageWithHeaders(node.src, BASE_URL);
             const maxH = 400;
             let r = Math.min(contentW / img.width, maxH / img.height);
             if (r > 1) r = 1; // 避免小图片被强制拉伸放大
@@ -841,7 +1305,7 @@ async function drawModCard(url) {
     ctx.fillStyle = '#999'; ctx.font = `12px "${font}"`; ctx.textAlign = 'center';
     ctx.fillText('mcmod.cn | Powered by Koishi', width / 2, totalH - 12);
 
-    return canvas.toBuffer('image/png');
+    return await canvas.encode('png');
   }
 
   // ================= 渲染：教程卡片 (macOS 风格) =================
@@ -915,30 +1379,120 @@ async function drawModCard(url) {
     // 正文提取
     const contentNodes = [];
     const contentRoot = $('.post-content, .article-content, .common-text, .news-text').first();
-    
-    function parseContent(node) {
-      if (node.type === 'text') {
-        const t = cleanText(node.data);
-        if (t && t.length > 1) contentNodes.push({ type: 't', val: t, tag: 'p' });
-      } else if (node.type === 'tag') {
-        const tagName = node.name;
-        if (tagName === 'img') {
-          const src = node.attribs['data-src'] || node.attribs['src'];
-          if (src && !src.includes('loading') && !src.includes('smilies') && !src.includes('icon')) {
-            contentNodes.push({ type: 'i', src: fixUrl(src) });
-          }
-        } else if (['h1','h2','h3','h4'].includes(tagName)) {
-          const text = cleanText($(node).text());
-          if (text) contentNodes.push({ type: 't', val: text, tag: 'h' });
-        } else if (tagName === 'li') {
-          const text = cleanText($(node).text());
-          if (text) contentNodes.push({ type: 't', val: '• ' + text, tag: 'li' });
-        } else if (['p', 'div', 'blockquote', 'span', 'strong', 'b', 'i', 'em'].includes(tagName)) {
-          if (node.children) node.children.forEach(parseContent);
-        } else {
-          if (node.children) node.children.forEach(parseContent);
-        }
+    const BLOCK_TAGS = new Set(['p', 'div', 'section', 'article', 'blockquote', 'ul', 'ol']);
+    const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'svg']);
+    let textBuffer = '';
+    let textTag = 'p';
+
+    const normalizeText = (text) => String(text || '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t\f\v]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+
+    const pushTextNode = (text, tag = 'p') => {
+      const normalized = normalizeText(text);
+      if (!normalized) return;
+      const last = contentNodes[contentNodes.length - 1];
+      if (last?.type === 't' && last.tag === tag && tag !== 'h') {
+        last.val = `${last.val}\n${normalized}`;
+        return;
       }
+      contentNodes.push({ type: 't', val: normalized, tag });
+    };
+
+    const flushText = () => {
+      if (!textBuffer) return;
+      pushTextNode(textBuffer, textTag || 'p');
+      textBuffer = '';
+      textTag = 'p';
+    };
+
+    const appendText = (text, tag = 'p') => {
+      if (!text) return;
+      if (textBuffer && textTag !== tag) flushText();
+      textTag = tag;
+      textBuffer += text;
+    };
+
+    function parseContent(node, preferredTag = 'p') {
+      if (!node) return;
+      if (node.type === 'text') {
+        appendText(node.data || '', preferredTag);
+        return;
+      }
+      if (node.type !== 'tag') return;
+
+      const tagName = String(node.name || '').toLowerCase();
+      if (!tagName || SKIP_TAGS.has(tagName)) return;
+
+      if (tagName === 'img') {
+        const src = extractImageUrl(node);
+        const alt = normalizeText(node.attribs.alt || '');
+        const isEmojiLikeAlt = !!alt && /^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F|\p{Emoji}\u200D)+$/u.test(alt);
+        const isEmojiLikeSrc = /emoji|smilies|twemoji|emot/i.test(src || '');
+        if ((isEmojiLikeAlt || isEmojiLikeSrc) && alt) {
+          appendText(alt, preferredTag);
+          return;
+        }
+        flushText();
+        if (src && !src.includes('loading') && !src.includes('icon')) {
+          contentNodes.push({ type: 'i', src: fixUrl(src) });
+        }
+        return;
+      }
+
+      if (tagName === 'br') {
+        appendText('\n', preferredTag);
+        return;
+      }
+
+      if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tagName)) {
+        flushText();
+        pushTextNode($(node).text(), 'h');
+        return;
+      }
+
+      if (tagName === 'li') {
+        flushText();
+        appendText('', 'li');
+        if (node.children) node.children.forEach(child => parseContent(child, 'li'));
+        const text = normalizeText(textBuffer);
+        textBuffer = '';
+        textTag = 'p';
+        if (text) contentNodes.push({ type: 'li', val: text });
+        return;
+      }
+
+      if (tagName === 'table') {
+        flushText();
+        const galleryItems = parseGalleryFromTable($, node);
+        if (galleryItems.length) {
+          contentNodes.push({ type: 'g', items: galleryItems });
+          return;
+        }
+        const rows = [];
+        $(node).find('tr').each((_, tr) => {
+          const row = [];
+          $(tr).find('th,td').each((__, cell) => row.push(normalizeText($(cell).text())));
+          if (row.some(Boolean)) rows.push(row);
+        });
+        if (rows.length) contentNodes.push({ type: 'tb', rows });
+        return;
+      }
+
+      if (tagName === 'a') {
+        const text = normalizeText($(node).text());
+        const href = fixUrl(node.attribs.href);
+        if (text) appendText(text, preferredTag);
+        if (href && (!text || !text.includes(href))) appendText(` (${href})`, preferredTag);
+        return;
+      }
+
+      const isBlock = BLOCK_TAGS.has(tagName);
+      if (isBlock) flushText();
+      if (node.children) node.children.forEach(child => parseContent(child, preferredTag));
+      if (isBlock) flushText();
     }
     
     if (contentRoot.length) {
@@ -946,6 +1500,7 @@ async function drawModCard(url) {
       if (textContainer.length > 0) textContainer[0].children.forEach(parseContent);
       else contentRoot[0].children.forEach(parseContent);
     }
+    flushText();
     
     if (contentNodes.length === 0) {
       const metaDesc = $('meta[name="description"]').attr('content');
@@ -964,7 +1519,7 @@ async function drawModCard(url) {
     await Promise.all(contentNodes.map(async (node) => {
       if (node.type === 'i') {
         try {
-          const img = await loadImage(node.src);
+          const img = await loadImageWithHeaders(node.src, BASE_URL);
           node.img = img; // 保存 Image 对象
           // 计算自适应尺寸：宽度最大为 contentW，高度按比例缩放，不设上限
           const scale = Math.min(contentW / img.width, 1); 
@@ -972,6 +1527,25 @@ async function drawModCard(url) {
           node.dh = img.height * scale;
         } catch (e) {
           node.error = true;
+        }
+      } else if (node.type === 'g') {
+        for (const item of node.items || []) {
+          try {
+            const img = await loadImageWithHeaders(item.src, BASE_URL);
+            item.imgCache = img;
+            let scale = Math.min(contentW / img.width, 1);
+            let dw = img.width * scale;
+            let dh = img.height * scale;
+            if (dh > 460) {
+              const r = 460 / dh;
+              dh = 460;
+              dw = dw * r;
+            }
+            item.dw = dw;
+            item.dh = dh;
+          } catch (e) {
+            item.error = true;
+          }
         }
       }
     }));
@@ -1006,6 +1580,29 @@ async function drawModCard(url) {
         // 这里不再限制行数 (limit = 10000)，显示全部文本
         const lines = wrapText(dummy, node.val, 0, 0, contentW, lineHeight, 10000, false) / lineHeight;
         contentH += lines * lineHeight + (isHeader ? 25 : 15);
+      } else if (node.type === 'li') {
+        dummy.font = `600 16px "${font}"`;
+        const h = wrapText(dummy, node.val, 0, 0, Math.max(80, contentW - 24), 26, 10000, false);
+        contentH += h + 12;
+      } else if (node.type === 'tb') {
+        const tableH = measureTableLayout(
+          dummy,
+          node,
+          contentW,
+          22,
+          `600 14px "${font}"`,
+          `800 14px "${font}"`
+        )?.totalH || 0;
+        contentH += tableH + 20;
+      } else if (node.type === 'g') {
+        for (const item of node.items || []) {
+          if (item.error || !item.imgCache) {
+            contentH += 110;
+            continue;
+          }
+          const captionH = item.caption ? wrapText(dummy, item.caption, 0, 0, contentW, 22, 5, false) : 0;
+          contentH += item.dh + captionH + 24;
+        }
       } else if (node.type === 'i' && !node.error && node.img) {
         // 使用预加载时计算出的真实高度
         contentH += node.dh + 25; 
@@ -1064,7 +1661,7 @@ async function drawModCard(url) {
     const avSize = 40;
     if (authorAvatar) {
       try {
-        const img = await loadImage(authorAvatar);
+        const img = await loadImageWithHeaders(authorAvatar, BASE_URL);
         ctx.save(); ctx.beginPath(); ctx.arc(cx + avSize/2, dy + avSize/2, avSize/2, 0, Math.PI*2); ctx.clip();
         ctx.drawImage(img, cx, dy, avSize, avSize); ctx.restore();
       } catch(e) {
@@ -1132,7 +1729,7 @@ async function drawModCard(url) {
       if (node.type === 't') {
         const isHeader = node.tag === 'h';
         const fontSize = isHeader ? 22 : 16;
-        ctx.font = `${isHeader ? 'bold' : ''} ${fontSize}px "${font}"`;
+        ctx.font = `${isHeader ? '800' : '600'} ${fontSize}px "${font}"`;
         ctx.fillStyle = isHeader ? '#2c3e50' : '#444';
             
         if (isHeader) {
@@ -1142,7 +1739,53 @@ async function drawModCard(url) {
         }
             
         const lineHeight = Math.floor(fontSize * 1.6);
-        dy = wrapText(ctx, node.val, cx, dy, contentW, lineHeight, 10000, true) + (isHeader ? 20 : 15);
+        dy = await drawTextWithTwemoji(ctx, node.val, cx, dy, contentW, lineHeight, 10000, true) + (isHeader ? 20 : 15);
+      } else if (node.type === 'li') {
+        const bulletX = cx + 4;
+        const textX = cx + 24;
+        ctx.fillStyle = '#444';
+        ctx.font = `600 16px "${font}"`;
+        ctx.fillText('•', bulletX, dy);
+        ctx.font = `600 16px "${font}"`;
+        dy = await drawTextWithTwemoji(ctx, node.val, textX, dy, Math.max(80, contentW - (textX - cx)), 26, 10000, true) + 12;
+      } else if (node.type === 'tb') {
+        const tableH = drawTable(
+          ctx,
+          node,
+          cx,
+          dy,
+          contentW,
+          22,
+          `600 14px "${font}"`,
+          `800 14px "${font}"`,
+          { headerBg: 'rgba(52,152,219,0.12)', cellBg: 'rgba(255,255,255,0.7)', border: 'rgba(52,152,219,0.25)', text: '#2f3742' }
+        );
+        dy += tableH + 20;
+      } else if (node.type === 'g') {
+        for (const item of node.items || []) {
+          if (item.error || !item.imgCache) {
+            ctx.fillStyle = 'rgba(0,0,0,0.06)';
+            roundRect(ctx, cx, dy, contentW, 90, 8); ctx.fill();
+            ctx.fillStyle = '#999';
+            ctx.font = `600 14px "${font}"`;
+            ctx.fillText('Image failed to load', cx + 16, dy + 38);
+            dy += 110;
+            continue;
+          }
+          const dx = cx + (contentW - item.dw) / 2;
+          ctx.save();
+          roundRect(ctx, dx, dy, item.dw, item.dh, 8); ctx.clip();
+          ctx.drawImage(item.imgCache, dx, dy, item.dw, item.dh);
+          ctx.restore();
+          dy += item.dh + 8;
+          if (item.caption) {
+            ctx.fillStyle = '#666';
+            ctx.font = `600 14px "${font}"`;
+            dy = await drawTextWithTwemoji(ctx, item.caption, cx, dy, contentW, 22, 5, true) + 12;
+          } else {
+            dy += 8;
+          }
+        }
             
       } else if (node.type === 'i' && !node.error && node.img) {
         // 绘制预加载的图片
@@ -1159,6 +1802,13 @@ async function drawModCard(url) {
         ctx.restore();
             
         dy += node.dh + 25;
+      } else if (node.type === 'i' && (node.error || !node.img)) {
+        ctx.fillStyle = 'rgba(0,0,0,0.06)';
+        roundRect(ctx, cx, dy, contentW, 90, 8); ctx.fill();
+        ctx.fillStyle = '#999';
+        ctx.font = `600 14px "${font}"`;
+        ctx.fillText('Image failed to load', cx + 16, dy + 38);
+        dy += 110;
       }
     }
 
@@ -1167,7 +1817,7 @@ async function drawModCard(url) {
     ctx.fillStyle = '#aaa'; ctx.font = `12px "${font}"`; ctx.textAlign = 'center';
     ctx.fillText('mcmod.cn | Powered by Koishi', width / 2, canvasH - 15);
 
-    return canvas.toBuffer('image/png');
+    return await canvas.encode('png');
   }
   // ================= 渲染：作者卡片 (macOS 风格) =================
   // ================= 渲染：作者卡片 (macOS 风格) =================
@@ -1662,9 +2312,9 @@ async function drawModCard(url) {
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     ctx.font = `12px "${font}"`;
     ctx.textAlign = 'center';
-    ctx.fillText('mcmod.cn | Powered by Koishi', width/2, totalH - 15);
+    ctx.fillText('mcmod.cn | Powered by Koishi | Plugin By yabo083 & Mai_xiyu', width/2, totalH - 15);
 
-    return canvas.toBuffer('image/png');
+    return await canvas.encode('png');
   }
   // ================= 普通用户卡片 (Center Card) =================
   async function drawCenterCard(uid, logger) { return drawCenterCardImpl(uid, logger); }
@@ -2058,7 +2708,7 @@ async function drawModCard(url) {
     ctx.fillStyle = '#999'; ctx.font = `12px "${font}"`; ctx.textAlign = 'center';
     ctx.fillText('mcmod.cn & bbs.mcmod.cn | Powered by Koishi | Plugin By Mai_xiyu', width / 2, totalHeight - 15);
 
-    return canvas.toBuffer('image/png');
+    return await canvas.encode('png');
   }
 
   // ================= 详情页卡片 =================
@@ -2312,7 +2962,7 @@ async function drawModCard(url) {
     ctx.fillStyle = '#aaa'; ctx.font = `12px "${font}"`; ctx.textAlign = 'center';
     ctx.fillText('mcmod.cn | Powered by Koishi', width / 2, totalH - 15);
 
-    return canvas.toBuffer('image/png');
+    return await canvas.encode('png');
   }
 
   // ================= Koishi =================
@@ -2321,26 +2971,55 @@ async function drawModCard(url) {
 export const Config = Schema.object({
   sendLink: Schema.boolean().default(true).description('发送卡片后是否附带链接'),
   cookie: Schema.string().description('【可选】手动填写 mcmod.cn 的 Cookie'),
+  fontPath: Schema.string().role('path').description('可选：自定义字体文件路径'),
+  debug: Schema.boolean().default(false).description('输出渲染调试日志'),
+  render: Schema.object({
+    emoji: Schema.object({
+      twemoji: Schema.boolean().default(true).description('启用 Twemoji 图形兜底'),
+      cdn: Schema.string().default('https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72').description('Twemoji CDN 前缀')
+    }).default({}),
+    image: Schema.object({
+      fetchWithHeaders: Schema.boolean().default(true).description('图片先用 HTTP(带 Referer/Cookie)抓取后解码')
+    }).default({})
+  }).default({})
 });
 
 export function apply(ctx, config) {
   const logger = ctx.logger('mcmod');
-  const skia = ctx.skia;
-  if (!skia?.Canvas || !skia?.loadImage) {
-    throw new Error('缺少 skia 服务，请先启用 @ltxhhz/koishi-plugin-skia-canvas');
+  RENDER_DEBUG = !!config?.debug;
+  RENDER_TWEMOJI = config?.render?.emoji?.twemoji !== false;
+  RENDER_TWEMOJI_CDN = String(config?.render?.emoji?.cdn || RENDER_TWEMOJI_CDN).replace(/\/+$/, '');
+  RENDER_IMAGE_FETCH_WITH_HEADERS = config?.render?.image?.fetchWithHeaders !== false;
+  const canvasService = config?.canvas;
+  if (!canvasService?.createCanvas || !canvasService?.loadImage) {
+    logger.warn('缺少 @napi-rs/canvas，cnmc 指令图片功能已禁用。请在 Koishi 实例目录执行: npm i @napi-rs/canvas');
+    return;
   }
   createCanvas = (w, h) => {
-    const c = new skia.Canvas(w || 0, h || 0);
+    const width = Math.max(1, Number(w) || 1);
+    const height = Math.max(1, Number(h) || 1);
+    const c = canvasService.createCanvas(width, height);
     if (!c || typeof c.getContext !== 'function') {
-      throw new Error('skia 服务异常：Canvas 无效，请确认使用 @ltxhhz/koishi-plugin-skia-canvas');
+      throw new Error('canvas 服务异常：Canvas 无效');
     }
     return c;
   };
-  loadImage = skia.loadImage;
+  loadImage = canvasService.loadImage;
   registerFont = (path, options) => {
-    if (skia.FontLibrary?.use) skia.FontLibrary.use(path, options?.family);
+    const family = options?.family || 'MCModFont';
+    if (typeof canvasService.registerFont === 'function') {
+      return canvasService.registerFont(path, family);
+    }
+    return canvasService.GlobalFonts?.registerFromPath?.(path, family);
   };
-  // 取消自定义字体配置，使用 skia 默认字体
+  initFont(config?.fontPath, logger, registerFont);
+  try {
+    const families = Array.from(canvasService?.GlobalFonts?.families || []);
+    if (families.length) {
+      const names = families.slice(0, 10).map((f: any) => String(f?.family || f?.name || f));
+      logger.info(`[Font] 当前可用字体: ${names.join(', ')}`);
+    }
+  } catch {}
 
   // 初始化 Cookie
   if (config.cookie) {
@@ -2651,3 +3330,6 @@ export function apply(ctx, config) {
     return next();
   });
 }
+
+
+

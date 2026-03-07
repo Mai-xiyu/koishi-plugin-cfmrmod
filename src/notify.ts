@@ -34,6 +34,51 @@ async function fetchJson(url: string, timeout = 15000) {
   }
 }
 
+function toMarkdownLike(input: any) {
+  const text = String(input || '');
+  if (!text) return '';
+  const looksLikeHtml = /<\/?[a-z][\s\S]*>/i.test(text);
+  if (!looksLikeHtml) return text.trim();
+  return text
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<li[^>]*>/gi, '\n- ')
+    .replace(/<\/li>/gi, '')
+    .replace(/<\/h[1-6]>/gi, '\n\n')
+    .replace(/<h[1-6][^>]*>/gi, '\n## ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+async function fetchCurseForgeChangelogOfficial(projectId: string, fileId: string, apiKey: string, timeout: number) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  try {
+    const res = await fetch(`${CF_OFFICIAL_BASE}/mods/${projectId}/files/${fileId}/changelog`, {
+      headers: {
+        'Accept': 'application/json',
+        'x-api-key': String(apiKey).trim(),
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    return toMarkdownLike(json?.data || json?.changelog || '');
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+async function fetchCurseForgeChangelogMirror(projectId: string, fileId: string, timeout: number) {
+  try {
+    const json = await fetchJson(`${CF_MIRROR_BASE}/mods/${projectId}/files/${fileId}/changelog`, timeout);
+    return toMarkdownLike(json?.data || json?.changelog || '');
+  } catch {
+    return '';
+  }
+}
+
 export function apply(ctx: Context, config: any, options: { cfmr: any }) {
   const logger = ctx.logger('cfmr-notify');
 
@@ -380,10 +425,13 @@ export function apply(ctx: Context, config: any, options: { cfmr: any }) {
           const files = await res.json();
           const latest = files?.data?.[0];
           if (!latest) return null;
+          const changelogText =
+            await fetchCurseForgeChangelogOfficial(projectId, String(latest.id), String(apiKey), timeout)
+              .catch(() => toMarkdownLike(latest.changelog || ''));
           return {
             versionId: String(latest.id),
             version: latest.displayName || latest.fileName || String(latest.id),
-            changelog: latest.changelog || '',
+            changelog: changelogText || toMarkdownLike(latest.changelog || ''),
             downloads: latest.downloadCount,
             datePublished: latest.fileDate || null,
             releaseType: latest.releaseType,
@@ -404,10 +452,13 @@ export function apply(ctx: Context, config: any, options: { cfmr: any }) {
     const files = await fetchJson(`${CF_MIRROR_BASE}/mods/${projectId}/files`, timeout);
     const latest = files?.data?.[0];
     if (!latest) return null;
+    const changelogText =
+      await fetchCurseForgeChangelogMirror(projectId, String(latest.id), timeout)
+        .catch(() => toMarkdownLike(latest.changelog || ''));
     return {
       versionId: String(latest.id),
       version: latest.displayName || latest.fileName || String(latest.id),
-      changelog: latest.changelog || '',
+      changelog: changelogText || toMarkdownLike(latest.changelog || ''),
       downloads: latest.downloadCount,
       datePublished: latest.fileDate || null,
       releaseType: latest.releaseType,

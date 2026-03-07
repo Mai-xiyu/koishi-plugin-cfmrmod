@@ -26,8 +26,8 @@ jobs:
 
       - name: Resolve Package Info
         run: |
-          echo "PKG_NAME=$(node -p \"require('./package.json').name\")" >> "$GITHUB_ENV"
-          echo "PKG_VERSION=$(node -p \"require('./package.json').version\")" >> "$GITHUB_ENV"
+          echo "PKG_NAME=$(npm pkg get name | tr -d '\"')" >> "$GITHUB_ENV"
+          echo "PKG_VERSION=$(npm pkg get version | tr -d '\"')" >> "$GITHUB_ENV"
 
       - name: Pack
         run: npm pack

@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  id-token: write  # 允许生成 OIDC token 用于 Trusted Publishing
+  contents: write
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -15,8 +19,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+
+      - name: Upgrade npm for Trusted Publishing
+        run: npm i -g npm@^11.5.1
 
       - name: Install
         run: npm install
@@ -24,23 +31,11 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Resolve Package Info
-        run: |
-          echo "PKG_NAME=$(npm pkg get name | tr -d '\"')" >> "$GITHUB_ENV"
-          echo "PKG_VERSION=$(npm pkg get version | tr -d '\"')" >> "$GITHUB_ENV"
-
       - name: Pack
         run: npm pack
 
-      - name: Publish (Skip If Exists)
-        run: |
-          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
-            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm, skip publish."
-          else
-            npm publish --access public
-          fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish (via Trusted Publishing)
+        run: npm publish --access public --provenance
 
       # 自动创建 GitHub Release 并上传 npm pack 产物
       - name: Create Release

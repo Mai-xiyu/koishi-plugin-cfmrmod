@@ -2368,7 +2368,7 @@ async function drawAuthorCard(url) {
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     ctx.font = `12px "${font}"`;
     ctx.textAlign = 'center';
-    ctx.fillText('mcmod.cn | Powered by Koishi', width / 2, totalH - 15);
+    ctx.fillText('mcmod.cn | Powered by Koishi | Plugin By Mai_xiyu', width / 2, totalH - 15);
     return await canvas.encode('png');
 }
 // ================= 普通用户卡片 (Center Card) =================

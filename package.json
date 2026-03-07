@@ -1,7 +1,7 @@
 {
-  "name": "koishi-plugin-cfmrmod-napi-yabo",
-  "version": "2.0.0",
-  "description": "Koishi 插件：搜索 CurseForge/Modrinth/MCMod 并渲染图片卡片（独立维护版）",
+  "name": "koishi-plugin-cfmrmod",
+  "version": "1.1.2",
+  "description": "Koishi 插件：搜索 CurseForge/Modrinth/MCMod 并渲染图片卡片",
   "main": "dist/index.js",
   "files": [
     "dist"
@@ -21,14 +21,20 @@
     "mcmod",
     "mcmod.cn"
   ],
-  "author": "yabo083",
-  "homepage": "https://github.com/yabo083/koishi-plugin-cfmrmod",
+  "author": "mai_xiyu",
+  "contributors": [
+    {
+      "name": "yabo083",
+      "url": "https://github.com/yabo083"
+    }
+  ],
+  "homepage": "https://github.com/Mai-xiyu/koishi-plugin-cfmrmod",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yabo083/koishi-plugin-cfmrmod.git"
+    "url": "git+https://github.com/Mai-xiyu/koishi-plugin-cfmrmod.git"
   },
   "bugs": {
-    "url": "https://github.com/yabo083/koishi-plugin-cfmrmod/issues"
+    "url": "https://github.com/Mai-xiyu/koishi-plugin-cfmrmod/issues"
   },
   "license": "MIT",
   "engines": {
@@ -53,7 +59,7 @@
   },
   "koishi": {
     "description": {
-      "zh": "从 CurseForge/Modrinth/MCMod 搜索模组/整合包/光影等内容，并生成图片卡片（独立维护版）。"
+      "zh": "从 CurseForge/Modrinth/MCMod 搜索模组/整合包/光影等内容，并生成图片卡片。"
     },
     "service": {
       "required": [

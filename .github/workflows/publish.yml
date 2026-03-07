@@ -3,7 +3,7 @@ name: Publish
 on:
   push:
     tags:
-      - '*'
+      - 'v*'
 
 jobs:
   publish:
@@ -24,12 +24,27 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Publish
-        run: npm publish --access public
+      - name: Resolve Package Info
+        run: |
+          echo "PKG_NAME=$(node -p \"require('./package.json').name\")" >> "$GITHUB_ENV"
+          echo "PKG_VERSION=$(node -p \"require('./package.json').version\")" >> "$GITHUB_ENV"
+
+      - name: Pack
+        run: npm pack
+
+      - name: Publish (Skip If Exists)
+        run: |
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${PKG_VERSION} already exists on npm, skip publish."
+          else
+            npm publish --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      # 自动创建 GitHub Release 并上传 .tgz
+
+      # 自动创建 GitHub Release 并上传 npm pack 产物
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: "*.tgz" # 自动把打包出来的文件上传到附件
+          tag_name: ${{ github.ref_name }}
+          files: '*.tgz'

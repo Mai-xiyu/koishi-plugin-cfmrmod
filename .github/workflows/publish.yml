@@ -28,3 +28,8 @@ jobs:
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # 自动创建 GitHub Release 并上传 .tgz
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: "*.tgz" # 自动把打包出来的文件上传到附件

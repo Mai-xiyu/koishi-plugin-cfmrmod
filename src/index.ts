@@ -4,7 +4,7 @@ import * as mcmod from './plugins/mcmod';
 import * as notify from './notify';
 
 export const name = 'minecraft-search';
-export const inject = ['skia', 'database'];
+export const inject = ['database'];
 
 export const Config = Schema.object({
   prefixes: Schema.object({
@@ -35,13 +35,33 @@ export const Config = Schema.object({
 });
 
 export function apply(ctx: any, config: any) {
+  const logger = ctx.logger(name);
+  let canvasAdapter: any = null;
+  try {
+    // Dynamic load: keep package lightweight for market scan.
+    const lib = require('@napi-rs/canvas');
+    canvasAdapter = {
+      createCanvas: lib.createCanvas,
+      loadImage: lib.loadImage,
+      Path2D: lib.Path2D,
+      GlobalFonts: lib.GlobalFonts,
+      registerFont(path: string, family: string) {
+        return lib.GlobalFonts.registerFromPath(path, family);
+      },
+    };
+  } catch (e: any) {
+    logger.warn(`未检测到 @napi-rs/canvas，图片生成功能已禁用。请在 Koishi 实例目录执行: npm i @napi-rs/canvas (${e?.message || e})`);
+  }
+
   const prefixes = config?.prefixes || {};
   const shared = {
     prefixes,
     timeouts: config?.timeouts,
     debug: config?.debug,
+    canvas: canvasAdapter,
   };
   if (cfmr.apply) cfmr.apply(ctx, { ...(config?.cfmr || {}), ...shared });
   if (mcmod.apply) mcmod.apply(ctx, { ...(config?.mcmod || {}), ...shared });
-  if (notify.apply) notify.apply(ctx, config?.notify || {}, { cfmr: config?.cfmr || {} });
+  if (notify.apply && canvasAdapter) notify.apply(ctx, config?.notify || {}, { cfmr: config?.cfmr || {} });
+  if (!canvasAdapter) logger.warn('notify 更新卡片功能已禁用（缺少 @napi-rs/canvas）。');
 }

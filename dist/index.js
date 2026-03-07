@@ -40,7 +40,7 @@ const cfmr = __importStar(require("./plugins/cfmr"));
 const mcmod = __importStar(require("./plugins/mcmod"));
 const notify = __importStar(require("./notify"));
 exports.name = 'minecraft-search';
-exports.inject = ['skia', 'database'];
+exports.inject = ['database'];
 exports.Config = koishi_1.Schema.object({
     prefixes: koishi_1.Schema.object({
         cf: koishi_1.Schema.string().default('cf'),
@@ -69,16 +69,37 @@ exports.Config = koishi_1.Schema.object({
     mcmod: mcmod.Config.description('MCMod.cn 搜索与图片卡片'),
 });
 function apply(ctx, config) {
+    const logger = ctx.logger(exports.name);
+    let canvasAdapter = null;
+    try {
+        // Dynamic load: keep package lightweight for market scan.
+        const lib = require('@napi-rs/canvas');
+        canvasAdapter = {
+            createCanvas: lib.createCanvas,
+            loadImage: lib.loadImage,
+            Path2D: lib.Path2D,
+            GlobalFonts: lib.GlobalFonts,
+            registerFont(path, family) {
+                return lib.GlobalFonts.registerFromPath(path, family);
+            },
+        };
+    }
+    catch (e) {
+        logger.warn(`未检测到 @napi-rs/canvas，图片生成功能已禁用。请在 Koishi 实例目录执行: npm i @napi-rs/canvas (${(e === null || e === void 0 ? void 0 : e.message) || e})`);
+    }
     const prefixes = (config === null || config === void 0 ? void 0 : config.prefixes) || {};
     const shared = {
         prefixes,
         timeouts: config === null || config === void 0 ? void 0 : config.timeouts,
         debug: config === null || config === void 0 ? void 0 : config.debug,
+        canvas: canvasAdapter,
     };
     if (cfmr.apply)
         cfmr.apply(ctx, { ...((config === null || config === void 0 ? void 0 : config.cfmr) || {}), ...shared });
     if (mcmod.apply)
         mcmod.apply(ctx, { ...((config === null || config === void 0 ? void 0 : config.mcmod) || {}), ...shared });
-    if (notify.apply)
+    if (notify.apply && canvasAdapter)
         notify.apply(ctx, (config === null || config === void 0 ? void 0 : config.notify) || {}, { cfmr: (config === null || config === void 0 ? void 0 : config.cfmr) || {} });
+    if (!canvasAdapter)
+        logger.warn('notify 更新卡片功能已禁用（缺少 @napi-rs/canvas）。');
 }

@@ -9,26 +9,27 @@ export async function drawModCard(url) {
     const $ = cheerio.load(html);
 
     // --- 1. 数据抓取 (保持原逻辑，确保稳定性) ---
-    const titleEl = $('.class-title').clone();
-    titleEl.find('.class-official-group').remove();
-    const titleHtml = titleEl.html() || '';
-    const cleanTitleStr = titleHtml.replace(/<[^>]+>/g, '\n');
-    const titleLines = cleanTitleStr.split('\n').map(s=>s.trim()).filter(s=>s);
-    const title = titleLines[0] || cleanText($('.class-title').text().replace(/开源|活跃|稳定|闭源|停更|弃坑|半弃坑|Beta/g, '').trim());
-    const subTitle = titleLines.slice(1).join(' ');
+    const titleRoot = $('.class-title').first();
+    const title = cleanText(titleRoot.find('h1,h2,h3').first().text()) ||
+      cleanText(($('meta[property="og:title"]').attr('content') || $('title').text()).split('-')[0]);
+    const subTitle = titleRoot.find('h4,small,.sub-title,.subtitle').map((_, el) => cleanText($(el).text())).get()
+      .filter(text => text && text !== title)
+      .join(' ');
 
-    let coverUrl = fixUrl($('.class-cover-image img').attr('src'));
-    let iconUrl = fixUrl($('.class-icon img').attr('src'));
-    // 如果没有封面，用图标代替；如果没有图标，尝试用封面代替
-    if (!coverUrl && iconUrl) coverUrl = iconUrl;
-    if (!iconUrl && coverUrl) iconUrl = coverUrl;
+    const coverNode = $('.class-cover-image img, .class-banner img').first()[0];
+    const iconNode = $('.class-icon img, .class-logo img, .class-cover-icon img').first()[0];
+    const hasDedicatedIcon = !!iconNode;
+    let coverUrl = fixUrl(extractImageUrl(coverNode));
+    let iconUrl = fixUrl(extractImageUrl(iconNode)) || coverUrl;
 
     // 标签
     const tags = [];
     const officialTags = new Set();
-    $('.class-official-group div').each((i, el) => {
+    const seenTags = new Set();
+    $('.class-title .class-status, .class-official-group div').each((i, el) => {
       const txt = cleanText($(el).text());
-      if (!txt || txt.length > 20) return;
+      if (!txt || txt.length > 20 || seenTags.has(txt)) return;
+      seenTags.add(txt);
       officialTags.add(txt);
       let color = '#999', bg = '#eee';
       if (txt.includes('开源') || txt.includes('活跃') || txt.includes('稳定')) { color = '#2ecc71'; bg = '#e8f5e9'; }
@@ -38,7 +39,8 @@ export async function drawModCard(url) {
     });
     $('.class-label-list a').each((i, el) => {
       const labelText = cleanText($(el).text());
-      if (!labelText || officialTags.has(labelText)) return;
+      if (!labelText || officialTags.has(labelText) || seenTags.has(labelText)) return;
+      seenTags.add(labelText);
       const cls = $(el).attr('class') || '';
       let bg = '#e3f2fd', c = '#3498db';
       if(cls.includes('c_1')) { bg='#e8f5e9'; c='#2ecc71'; } 
@@ -87,10 +89,10 @@ export async function drawModCard(url) {
 
     // 作者
     const authors = [];
-    $('.author-list li, .author li').each((i, el) => {
-      const n = cleanText($(el).find('.name').text());
+    $('.author li, .author-list li, .class-author-list li, .common-class-author li').each((i, el) => {
+      const n = cleanText($(el).find('.name a, .name, .member a').first().text()) || cleanText($(el).attr('title'));
       const r = cleanText($(el).find('.position').text());
-      const iurl = fixUrl($(el).find('img').attr('src'));
+      const iurl = fixUrl(extractImageUrl($(el).find('.avatar img, img').first()[0]));
       if(n) authors.push({ n, r, i: iurl });
     });
 
@@ -263,6 +265,27 @@ export async function drawModCard(url) {
       if (metaDesc) descNodes.push({ type: 't', val: metaDesc, tag: 'p' });
     }
 
+    const loadOptionalImage = async (src) => {
+      if (!src) return null;
+      try {
+        return await loadImageWithHeaders(src, url, 18000);
+      } catch (e) {
+        try {
+          return await loadImageWithHeaders(src, BASE_URL, 18000);
+        } catch (e2) {
+          return null;
+        }
+      }
+    };
+
+    const coverImg = await loadOptionalImage(coverUrl);
+    let iconImg = await loadOptionalImage(iconUrl);
+    if (!iconImg && iconUrl === coverUrl && coverImg) iconImg = coverImg;
+    const showCover = !!coverImg && (hasDedicatedIcon || coverUrl !== iconUrl);
+    await Promise.all(authors.slice(0, 3).map(async author => {
+      author.imgCache = await loadOptionalImage(author.i);
+    }));
+
     // --- 2. 布局计算 (macOS 风格) ---
     const width = 800;
     const font = GLOBAL_FONT_FAMILY;
@@ -276,17 +299,31 @@ export async function drawModCard(url) {
     dummy.font = `bold 32px "${font}"`;
 
     // 头部区域 (Header)
-    let headerH = 100; // Icon(80) + padding
-    const titleLinesNum = wrapText(dummy, title, 0, 0, contentW - 100, 40, 10, false) / 40;
-    headerH = Math.max(headerH, 10 + titleLinesNum * 40 + (subTitle ? 25 : 0) + (authors.length ? 40 : 0));
+    const iconSize = 88;
+    const titleAreaW = contentW - iconSize - 24;
+    const titleLinesNum = wrapText(dummy, title, 0, 0, titleAreaW, 40, 10, false) / 40;
+    let headerH = Math.max(iconSize, titleLinesNum * 40 + (subTitle ? 26 : 0) + (authors.length ? 32 : 0) + 8);
     
     // 标签区域
     let tagsH = 0;
-    if (tags.length) tagsH = 40;
+    if (tags.length) {
+      dummy.font = `12px "${font}"`;
+      let rowW = 0;
+      let rows = 1;
+      for (const tag of tags) {
+        const tagW = dummy.measureText(tag.t).width + 20;
+        if (rowW && rowW + tagW > contentW) {
+          rows++;
+          rowW = 0;
+        }
+        rowW += tagW + 10;
+      }
+      tagsH = rows * 28;
+    }
 
     // 封面图 (Cover)
     let coverH = 0;
-    if (coverUrl) coverH = 300; // 固定封面显示高度
+    if (showCover) coverH = 220;
 
     // 统计数据 (Stats Grid)
     // 布局：每行4个数据
@@ -322,7 +359,20 @@ export async function drawModCard(url) {
         extraH += lines * 20 + 10;
       });
     }
-    if (links.length) extraH += 50;
+    if (links.length) {
+      dummy.font = `bold 12px "${font}"`;
+      let rowW = 0;
+      let rows = 1;
+      for (const link of links) {
+        const linkW = dummy.measureText(link).width + 20;
+        if (rowW && rowW + linkW > contentW) {
+          rows++;
+          rowW = 0;
+        }
+        rowW += linkW + 10;
+      }
+      extraH += rows * 30 + 12;
+    }
 
     // 简介 (Desc)
     let descH = 0;
@@ -391,8 +441,8 @@ export async function drawModCard(url) {
     // 总高度
     let cursorY = margin + 40; // Top traffic lights area
     const components = [
-      { h: tagsH, gap: 10 },
-      { h: headerH, gap: 20 },
+      { h: headerH, gap: 16 },
+      { h: tagsH, gap: 20 },
       { h: coverH, gap: 25 },
       { h: statsH, gap: 25 },
       { h: propsH, gap: 25 },
@@ -402,7 +452,7 @@ export async function drawModCard(url) {
     
     components.forEach(c => { if(c.h > 0) cursorY += c.h + c.gap; });
     const windowH = cursorY;
-    const totalH = windowH + margin * 2;
+    const totalH = windowH + margin * 2 + 24;
 
     // --- 3. 开始绘制 ---
     const canvas = createCanvas(width, totalH);
@@ -448,42 +498,41 @@ export async function drawModCard(url) {
     let dy = winY + 50;
     const cx = winX + winPadding;
 
-    // 1. Tags
-    if (tags.length) {
-      let tx = cx;
-      ctx.textBaseline = 'middle'; // Fix tag text centering
-      tags.forEach(t => {
-        ctx.font = `12px "${font}"`;
-        const tw = ctx.measureText(t.t).width + 20;
-        if (tx + tw < cx + contentW) {
-          ctx.fillStyle = t.bg; roundRect(ctx, tx, dy, tw, 24, 6); ctx.fill();
-          ctx.fillStyle = t.c; ctx.fillText(t.t, tx + 10, dy + 12);
-          tx += tw + 10;
-        }
-      });
-      ctx.textBaseline = 'alphabetic'; // reset
-      dy += 35;
-    }
+    const getInitials = (text) => {
+      const value = cleanText(text).replace(/^\[[^\]]+\]\s*/, '');
+      if (!value) return 'MOD';
+      const ascii = value.match(/[A-Za-z0-9]+/g)?.join('').slice(0, 2);
+      if (ascii) return ascii.toUpperCase();
+      return Array.from(value).slice(0, 2).join('');
+    };
 
-    // 2. Header
-    // Icon
-    const iconSize = 80;
-    if (iconUrl) {
-      try {
-          const img = await loadImageWithHeaders(iconUrl, BASE_URL);
-        ctx.save();
-        roundRect(ctx, cx, dy, iconSize, iconSize, 12); ctx.clip();
-        ctx.drawImage(img, cx, dy, iconSize, iconSize);
-        ctx.restore();
-      } catch(e) {
-        ctx.fillStyle = '#ddd'; roundRect(ctx, cx, dy, iconSize, iconSize, 12); ctx.fill();
-      }
-    }
+    const drawImageCover = (img, x, y, w, h, radius) => {
+      const scale = Math.max(w / img.width, h / img.height);
+      ctx.save();
+      roundRect(ctx, x, y, w, h, radius); ctx.clip();
+      ctx.drawImage(img, x + (w - img.width * scale) / 2, y + (h - img.height * scale) / 2, img.width * scale, img.height * scale);
+      ctx.restore();
+    };
+
+    const drawInitialTile = (x, y, w, h, label, radius = 12) => {
+      const grad = ctx.createLinearGradient(x, y, x + w, y + h);
+      grad.addColorStop(0, '#4b5563');
+      grad.addColorStop(1, '#111827');
+      ctx.fillStyle = grad;
+      roundRect(ctx, x, y, w, h, radius); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = `bold ${Math.max(18, Math.floor(w * 0.32))}px "${font}"`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(getInitials(label), x + w / 2, y + h / 2);
+      ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    };
+
+    // 1. Header
+    if (iconImg) drawImageCover(iconImg, cx, dy, iconSize, iconSize, 12);
+    else drawInitialTile(cx, dy, iconSize, iconSize, title, 12);
     
     // Title
-    const titleX = cx + iconSize + 20;
+    const titleX = cx + iconSize + 24;
     ctx.fillStyle = '#333'; ctx.font = `bold 32px "${font}"`; ctx.textBaseline = 'top';
-    const titleDrawnH = wrapText(ctx, title, titleX, dy - 5, contentW - iconSize - 20, 40, 3, true);
+    const titleDrawnH = wrapText(ctx, title, titleX, dy - 4, titleAreaW, 40, 3, true);
     
     // SubTitle
     let subY = titleDrawnH + 5;
@@ -497,33 +546,52 @@ export async function drawModCard(url) {
     if (authors.length) {
       let ax = titleX;
       for (const a of authors.slice(0, 3)) { // 最多显示3个作者
-        ctx.save(); ctx.beginPath(); ctx.arc(ax + 12, subY + 12, 12, 0, Math.PI * 2); ctx.clip();
-        if (a.i) { try { const img = await loadImageWithHeaders(a.i, BASE_URL); ctx.drawImage(img, ax, subY, 24, 24); } catch(e) { ctx.fillStyle='#ccc'; ctx.fill(); } }
-        else { ctx.fillStyle='#ccc'; ctx.fill(); }
+        ctx.save();
+        ctx.beginPath(); ctx.arc(ax + 12, subY + 12, 12, 0, Math.PI * 2); ctx.clip();
+        if (a.imgCache) ctx.drawImage(a.imgCache, ax, subY, 24, 24);
+        else { ctx.fillStyle = '#d1d5db'; ctx.fillRect(ax, subY, 24, 24); }
         ctx.restore();
+        if (!a.imgCache) {
+          ctx.fillStyle = '#6b7280'; ctx.font = `bold 11px "${font}"`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText(getInitials(a.n).slice(0, 1), ax + 12, subY + 12);
+          ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+        }
             
         ctx.fillStyle = '#666'; ctx.font = `14px "${font}"`;
-        ctx.fillText(a.n, ax + 30, subY + 5);
-        ax += ctx.measureText(a.n).width + 45;
+        let name = a.n;
+        while (ctx.measureText(name).width > 130 && name.length > 2) name = `${name.slice(0, -2)}...`;
+        if (ax + 30 + ctx.measureText(name).width > cx + contentW) break;
+        ctx.fillText(name, ax + 30, subY + 5);
+        ax += ctx.measureText(name).width + 45;
       }
     }
     
-    dy += Math.max(headerH, 100) + 20;
+    dy += headerH + 16;
+
+    // 2. Tags
+    if (tags.length) {
+      let tx = cx;
+      let ty = dy;
+      ctx.textBaseline = 'middle';
+      tags.forEach(t => {
+        ctx.font = `12px "${font}"`;
+        const tw = ctx.measureText(t.t).width + 20;
+        if (tx !== cx && tx + tw > cx + contentW) {
+          tx = cx;
+          ty += 28;
+        }
+        ctx.fillStyle = t.bg; roundRect(ctx, tx, ty, tw, 24, 6); ctx.fill();
+        ctx.fillStyle = t.c; ctx.fillText(t.t, tx + 10, ty + 12);
+        tx += tw + 10;
+      });
+      ctx.textBaseline = 'alphabetic';
+      dy += tagsH + 20;
+    }
 
     // 3. Cover Image
-    if (coverUrl) {
-      try {
-        const img = await loadImageWithHeaders(coverUrl, BASE_URL);
-        const coverW = contentW;
-        const coverH_Actual = 280;
-        // Crop fit
-        const r = Math.max(coverW / img.width, coverH_Actual / img.height);
-        ctx.save();
-        roundRect(ctx, cx, dy, coverW, coverH_Actual, 12); ctx.clip();
-        ctx.drawImage(img, (coverW - img.width * r) / 2 + cx, (coverH_Actual - img.height * r) / 2 + dy, img.width * r, img.height * r);
-        ctx.restore();
-        dy += coverH_Actual + 25;
-      } catch(e) {}
+    if (showCover) {
+      drawImageCover(coverImg, cx, dy, contentW, coverH, 12);
+      dy += coverH + 25;
     }
 
     // 4. Stats Grid
@@ -585,16 +653,21 @@ export async function drawModCard(url) {
     }
     if (links.length) {
       let lx = cx;
+      let ly = dy;
+      ctx.textBaseline = 'middle';
       links.forEach(l => {
         ctx.font = `bold 12px "${font}"`;
         const w = ctx.measureText(l).width + 20;
-        if (lx + w < cx + contentW) {
-          ctx.fillStyle = '#333'; roundRect(ctx, lx, dy, w, 24, 12); ctx.fill();
-          ctx.fillStyle = '#fff'; ctx.fillText(l, lx + 10, dy + 6);
-          lx += w + 10;
+        if (lx !== cx && lx + w > cx + contentW) {
+          lx = cx;
+          ly += 30;
         }
+        ctx.fillStyle = '#333'; roundRect(ctx, lx, ly, w, 24, 12); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.fillText(l, lx + 10, ly + 12);
+        lx += w + 10;
       });
-      dy += 45;
+      ctx.textBaseline = 'alphabetic';
+      dy += Math.ceil((ly - dy + 24) / 30) * 30 + 12;
     }
 
     // 7. Description

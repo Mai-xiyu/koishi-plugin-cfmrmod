@@ -47,7 +47,7 @@ exports.Config = koishi_1.Schema.object({
         cf: koishi_1.Schema.string().default('cf'),
         mr: koishi_1.Schema.string().default('mr'),
         cnmc: koishi_1.Schema.string().default('cnmc'),
-    }).description('指令前缀设置'),
+    }).default({ cf: 'cf', mr: 'mr', cnmc: 'cnmc' }).description('指令前缀设置'),
     notify: koishi_1.Schema.object({
         enabled: koishi_1.Schema.boolean().default(false).description('是否开启模组更新通知'),
         interval: koishi_1.Schema.number().default(30 * 60 * 1000).description('轮询间隔(ms)，默认 30 分钟'),
@@ -63,12 +63,19 @@ exports.Config = koishi_1.Schema.object({
                 interval: koishi_1.Schema.number().default(30 * 60 * 1000).description('单独轮询间隔(ms)，默认 30 分钟，<= 0 禁用该订阅'),
             })).role('table').default([]).description('订阅列表'),
         })).role('table').default([]).description('通知群与订阅列表'),
+    }).default({
+        enabled: false,
+        interval: 30 * 60 * 1000,
+        adminAuthority: 3,
+        stateFile: 'data/cfmrmod_notify_state.json',
+        configFile: 'data/cfmrmod_notify_config.json',
+        groups: [],
     }).description('—— 更新通知 ——'),
     timeouts: koishi_1.Schema.number().default(60000).description('搜索会话超时时间(ms)'),
     debug: koishi_1.Schema.boolean().default(false).description('开启调试日志'),
     nlu: nlu.Config,
-    cfmr: cfmr.Config.description('CurseForge/Modrinth 搜索与图片卡片'),
-    mcmod: mcmod.Config.description('MCMod.cn 搜索与图片卡片'),
+    cfmr: cfmr.Config.default({}).description('CurseForge/Modrinth 搜索与图片卡片'),
+    mcmod: mcmod.Config.default({}).description('MCMod.cn 搜索与图片卡片'),
 });
 function apply(ctx, config) {
     const logger = ctx.logger(exports.name);

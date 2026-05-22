@@ -15,7 +15,7 @@ const searchStates = new Map();
 export const name = 'mcmod-search';
 export const Config = Schema.object({
   sendLink: Schema.boolean().default(true).description('发送卡片后是否附带链接'),
-  cookie: Schema.string().description('【可选】手动填写 mcmod.cn 的 Cookie'),
+  cookie: Schema.string().default('').description('【可选】手动填写 mcmod.cn 的 Cookie'),
   autoCookie: Schema.boolean().default(false).description('自动从 cookie-manager 获取 mcmod.cn Cookie（存在该模块时生效）'),
   cookieCheckInterval: Schema.number().default(30 * 60 * 1000).description('Cookie/Seed 检查间隔(ms)'),
   fontPath: Schema.string().role('path').description('可选：自定义字体文件路径'),

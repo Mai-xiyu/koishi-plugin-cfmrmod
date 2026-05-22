@@ -7,11 +7,11 @@ const DEFAULT_MODEL = 'gpt-4o-mini';
 export const Config = Schema.object({
   enabled: Schema.boolean().default(false).description('启用 @机器人 自然语言查询入口'),
   endpoint: Schema.string().default(DEFAULT_ENDPOINT).description('OpenAI 兼容 Chat Completions 接口地址'),
-  apiKey: Schema.string().role('secret').description('OpenAI 兼容接口 API Key'),
+  apiKey: Schema.string().default('').description('OpenAI 兼容接口 API Key'),
   model: Schema.string().default(DEFAULT_MODEL).description('模型名称'),
   timeout: Schema.number().default(15000).description('AI 请求超时(ms)'),
   temperature: Schema.number().default(0).description('AI 温度参数'),
-}).description('—— AI 自然语言理解 ——');
+}).default({}).description('—— AI 自然语言理解 ——');
 
 const PLATFORM_ALIASES = {
   mcmod: 'mcmod', cnmc: 'mcmod', mc: 'mcmod', 'mcmod.cn': 'mcmod', 'mc百科': 'mcmod',

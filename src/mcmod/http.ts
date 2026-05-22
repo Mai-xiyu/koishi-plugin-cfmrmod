@@ -11,7 +11,8 @@ try {
 
 let globalCookie = '';
 let cookieLastCheck = 0;
-const COOKIE_CHECK_INTERVAL = 30 * 60 * 1000;
+let cookieCheckInterval = 30 * 60 * 1000;
+let useManagedCookie = false;
 
 function mergeCookie(name, value) {
   if (!name || !value) return;
@@ -55,12 +56,22 @@ export function setMcmodCookie(cookie, checkedAt = Date.now()) {
   cookieLastCheck = checkedAt;
 }
 
+export function configureMcmodCookie(options = {}) {
+  useManagedCookie = !!(options as any).autoCookie;
+  const interval = Number((options as any).checkInterval);
+  if (Number.isFinite(interval) && interval > 0) cookieCheckInterval = interval;
+  if ((options as any).cookie !== undefined) {
+    setMcmodCookie((options as any).cookie || '', (options as any).cookie ? Date.now() : 0);
+  }
+}
+
 export function getMcmodCookie() {
   return globalCookie;
 }
 
 export function loadManagedCookie(logger) {
   if (!cookieManager) return;
+  useManagedCookie = true;
   cookieManager.getCookie().then(cookie => {
     if (cookie) {
       setMcmodCookie(cookie);
@@ -114,11 +125,11 @@ export function getImageHeaders(url, referer = `${BASE_URL}/`) {
 
 export async function ensureValidCookie() {
   const now = Date.now();
-  if (hasCookie('MCMOD_SEED') && (now - cookieLastCheck) < COOKIE_CHECK_INTERVAL) {
+  if (hasCookie('MCMOD_SEED') && (now - cookieLastCheck) < cookieCheckInterval) {
     return;
   }
 
-  if (cookieManager) {
+  if (useManagedCookie && cookieManager) {
     try {
       const cookie = await cookieManager.getCookie();
       if (cookie) {

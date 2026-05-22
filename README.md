@@ -19,6 +19,15 @@ Star就是我维护的动力🤤
 - `cnmc.mod/.data/.pack/.tutorial/.author/.user <关键词>`
 - `cf.help` / `mr.help` / `cnmc.help`
 
+#### AI 自然语言查询（可选）
+开启 `nlu.enabled` 并配置 OpenAI 兼容接口后，只有 `@机器人` 的消息会进入自然语言理解；不 @ 机器人时仍只响应上面的显式命令。
+
+示例：
+- `@机器人 查询钠模组`：默认在 MCMod 查询 Mod
+- `@机器人 在 cf 查一下 jei`：在 CurseForge 查询 Mod
+- `@机器人 在 mr 查一下 iris 光影`：在 Modrinth 查询 Shader
+- `@机器人 在 cnmc 查一下 Create: EasyFilling`：在 MCMod 查询 Mod
+
 #### 更新通知（notify）
 - `notify.add <platform> <projectId>` 添加订阅
 - `notify.remove <platform> <projectId>` 删除订阅
@@ -41,6 +50,20 @@ Star就是我维护的动力🤤
 - `prefixes`: 设置 `cf` / `mr` / `cnmc` 指令前缀
 - `timeouts`: 搜索会话超时（毫秒）
 - `debug`: 调试日志开关
+
+#### AI 自然语言理解（nlu）
+- `nlu.enabled`: 是否启用 `@机器人` 自然语言查询
+- `nlu.endpoint`: OpenAI 兼容 Chat Completions 接口地址，默认 `https://api.openai.com/v1/chat/completions`
+- `nlu.apiKey`: API Key
+- `nlu.model`: 模型名称，默认 `gpt-4o-mini`
+- `nlu.timeout`: AI 请求超时（毫秒）
+- `nlu.temperature`: AI 温度参数，默认 `0`
+
+#### MCMod（mcmod）
+- `mcmod.cookie`: 手动填写 mcmod.cn Cookie
+- `mcmod.autoCookie`: 自动从 `cookie-manager` 获取 Cookie（存在该模块时生效）
+- `mcmod.cookieCheckInterval`: Cookie / `MCMOD_SEED` 检查间隔（毫秒）
+- 未配置 Cookie 时，插件会自动访问 MCMod 首页获取 `MCMOD_SEED`，用于通过站点的基础 Cookie 校验。
 
 #### 更新通知（notify）
 - `notify.enabled`: 是否开启更新通知

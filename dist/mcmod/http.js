@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.setMcmodCookie = setMcmodCookie;
+exports.configureMcmodCookie = configureMcmodCookie;
 exports.getMcmodCookie = getMcmodCookie;
 exports.loadManagedCookie = loadManagedCookie;
 exports.fetchWithTimeout = fetchWithTimeout;
@@ -20,7 +21,8 @@ catch (e) {
 }
 let globalCookie = '';
 let cookieLastCheck = 0;
-const COOKIE_CHECK_INTERVAL = 30 * 60 * 1000;
+let cookieCheckInterval = 30 * 60 * 1000;
+let useManagedCookie = false;
 function mergeCookie(name, value) {
     if (!name || !value)
         return;
@@ -66,12 +68,22 @@ function setMcmodCookie(cookie, checkedAt = Date.now()) {
     globalCookie = String(cookie || '');
     cookieLastCheck = checkedAt;
 }
+function configureMcmodCookie(options = {}) {
+    useManagedCookie = !!options.autoCookie;
+    const interval = Number(options.checkInterval);
+    if (Number.isFinite(interval) && interval > 0)
+        cookieCheckInterval = interval;
+    if (options.cookie !== undefined) {
+        setMcmodCookie(options.cookie || '', options.cookie ? Date.now() : 0);
+    }
+}
 function getMcmodCookie() {
     return globalCookie;
 }
 function loadManagedCookie(logger) {
     if (!cookieManager)
         return;
+    useManagedCookie = true;
     cookieManager.getCookie().then(cookie => {
         var _a;
         if (cookie) {
@@ -125,10 +137,10 @@ function getImageHeaders(url, referer = `${constants_1.BASE_URL}/`) {
 }
 async function ensureValidCookie() {
     const now = Date.now();
-    if (hasCookie('MCMOD_SEED') && (now - cookieLastCheck) < COOKIE_CHECK_INTERVAL) {
+    if (hasCookie('MCMOD_SEED') && (now - cookieLastCheck) < cookieCheckInterval) {
         return;
     }
-    if (cookieManager) {
+    if (useManagedCookie && cookieManager) {
         try {
             const cookie = await cookieManager.getCookie();
             if (cookie) {

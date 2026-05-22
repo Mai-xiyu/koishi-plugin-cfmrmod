@@ -1,7 +1,7 @@
 ﻿const { h, Schema } = require('koishi');
 import { createInfoCard, drawAuthorCard, drawCenterCardImpl, drawModCard, drawTutorialCard } from './cards';
 import { PAGE_SIZE, TIMEOUT_MS } from './constants';
-import { ensureValidCookie, loadManagedCookie, setMcmodCookie } from './http';
+import { configureMcmodCookie, ensureValidCookie, loadManagedCookie } from './http';
 import { configureRenderer } from './rendering';
 import { fetchSearch, formatListPage } from './search';
 import { toImageSrc } from './utils';
@@ -16,6 +16,8 @@ export const name = 'mcmod-search';
 export const Config = Schema.object({
   sendLink: Schema.boolean().default(true).description('发送卡片后是否附带链接'),
   cookie: Schema.string().description('【可选】手动填写 mcmod.cn 的 Cookie'),
+  autoCookie: Schema.boolean().default(false).description('自动从 cookie-manager 获取 mcmod.cn Cookie（存在该模块时生效）'),
+  cookieCheckInterval: Schema.number().default(30 * 60 * 1000).description('Cookie/Seed 检查间隔(ms)'),
   fontPath: Schema.string().role('path').description('可选：自定义字体文件路径'),
   debug: Schema.boolean().default(false).description('输出渲染调试日志'),
   render: Schema.object({
@@ -35,9 +37,14 @@ export function apply(ctx, config) {
     return;
   }
 
+  configureMcmodCookie({
+    cookie: config.cookie,
+    autoCookie: config.autoCookie,
+    checkInterval: config.cookieCheckInterval,
+  });
+
   // 初始化 Cookie
   if (config.cookie) {
-    setMcmodCookie(config.cookie);
     logger.info('使用手动配置的 Cookie');
   } else if (config.autoCookie) {
     loadManagedCookie(logger);

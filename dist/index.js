@@ -38,6 +38,7 @@ exports.apply = apply;
 const koishi_1 = require("koishi");
 const cfmr = __importStar(require("./plugins/cfmr"));
 const mcmod = __importStar(require("./plugins/mcmod"));
+const nlu = __importStar(require("./nlu"));
 const notify = __importStar(require("./notify"));
 exports.name = 'minecraft-search';
 exports.inject = ['database'];
@@ -65,6 +66,7 @@ exports.Config = koishi_1.Schema.object({
     }).description('—— 更新通知 ——'),
     timeouts: koishi_1.Schema.number().default(60000).description('搜索会话超时时间(ms)'),
     debug: koishi_1.Schema.boolean().default(false).description('开启调试日志'),
+    nlu: nlu.Config,
     cfmr: cfmr.Config.description('CurseForge/Modrinth 搜索与图片卡片'),
     mcmod: mcmod.Config.description('MCMod.cn 搜索与图片卡片'),
 });
@@ -98,6 +100,8 @@ function apply(ctx, config) {
         cfmr.apply(ctx, { ...((config === null || config === void 0 ? void 0 : config.cfmr) || {}), ...shared });
     if (mcmod.apply)
         mcmod.apply(ctx, { ...((config === null || config === void 0 ? void 0 : config.mcmod) || {}), ...shared });
+    if (nlu.apply)
+        nlu.apply(ctx, (config === null || config === void 0 ? void 0 : config.nlu) || {}, shared);
     if (notify.apply && canvasAdapter)
         notify.apply(ctx, (config === null || config === void 0 ? void 0 : config.notify) || {}, { cfmr: (config === null || config === void 0 ? void 0 : config.cfmr) || {} });
     if (!canvasAdapter)

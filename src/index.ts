@@ -1,6 +1,7 @@
 import { Schema } from 'koishi';
 import * as cfmr from './plugins/cfmr';
 import * as mcmod from './plugins/mcmod';
+import * as nlu from './nlu';
 import * as notify from './notify';
 
 export const name = 'minecraft-search';
@@ -30,6 +31,7 @@ export const Config = Schema.object({
   }).description('—— 更新通知 ——'),
   timeouts: Schema.number().default(60000).description('搜索会话超时时间(ms)'),
   debug: Schema.boolean().default(false).description('开启调试日志'),
+  nlu: nlu.Config,
   cfmr: cfmr.Config.description('CurseForge/Modrinth 搜索与图片卡片'),
   mcmod: mcmod.Config.description('MCMod.cn 搜索与图片卡片'),
 });
@@ -62,6 +64,7 @@ export function apply(ctx: any, config: any) {
   };
   if (cfmr.apply) cfmr.apply(ctx, { ...(config?.cfmr || {}), ...shared });
   if (mcmod.apply) mcmod.apply(ctx, { ...(config?.mcmod || {}), ...shared });
+  if (nlu.apply) nlu.apply(ctx, config?.nlu || {}, shared);
   if (notify.apply && canvasAdapter) notify.apply(ctx, config?.notify || {}, { cfmr: config?.cfmr || {} });
   if (!canvasAdapter) logger.warn('notify 更新卡片功能已禁用（缺少 @napi-rs/canvas）。');
 }

@@ -225,11 +225,8 @@ export function apply(ctx: Context, config: any, options: { cfmr: any }) {
       const content = await fs.readFile(filePath, 'utf8');
       const json = JSON.parse(content);
       if (json && typeof json === 'object') {
-        // 从文件加载时同步到 config 对象
         if (typeof json.enabled === 'boolean') config.enabled = json.enabled;
         if (Array.isArray(json.groups)) config.groups = json.groups;
-        // 更新到 Koishi 配置系统
-        ctx.scope.update(config, false); // 不重载插件
       }
       if (!Array.isArray(config.groups)) config.groups = [];
     } catch {
@@ -243,10 +240,6 @@ export function apply(ctx: Context, config: any, options: { cfmr: any }) {
       // 确保 groups 数组存在
       if (!Array.isArray(config.groups)) config.groups = [];
       
-      // 更新到 Koishi 配置系统，让修改反映到配置界面
-      ctx.scope.update(config, false); // 不重载插件，避免中断运行
-      
-      // 同时保存到文件，保持 Koishi 配置和文件同步
       const filePath = resolveConfigFile();
       await fs.mkdir(path.dirname(filePath), { recursive: true });
       const obj = {

@@ -48,6 +48,9 @@ export const Config = Schema.object({
   pageSize: Schema.number().default(10).description('每页显示数量'),
   cacheTtl: Schema.number().default(5 * 60 * 1000).description('缓存有效期(ms)'),
   requestTimeout: Schema.number().default(15000).description('请求超时(ms)'),
+  curseforgeApiKey: Schema.string().default('').description('CurseForge 官方 API Key（可选，未配置时使用镜像/页面抓取）'),
+  curseforgeGameId: Schema.number().default(432).description('CurseForge 游戏 ID，Minecraft 默认为 432'),
+  maxCanvasHeight: Schema.number().default(8000).description('单张渲染图片最大高度，超出后分页'),
   sendLink: Schema.boolean().default(true).description('发送卡片后是否附带链接'),
   fontPath: Schema.string().role('path').description('可选：自定义字体文件路径'),
   debug: Schema.boolean().default(false).description('输出渲染调试日志'),
@@ -775,6 +778,7 @@ export async function drawProjectCard(data) {
   dummy.font = `16px "${font}"`; // Desc
   const descH = wrapText(dummy, (data.summary || '').substring(0, 150), 0, 0, headerTextW, 24, 2, false);
   headerContentH += descH + 10;
+  headerContentH += 30;
 
   // Stats & Tags 行高度（按实际宽度计算是否换行）
   dummy.font = `600 15px "${font}"`;
@@ -930,6 +934,16 @@ export async function drawProjectCard(data) {
   // ================= Header Draw =================
   let cy = margin;
   const hx = margin;
+  if (!contentOnly && data.source === 'Modrinth') {
+    ctx.fillStyle = '#1bd96a';
+    roundRect(ctx, width - margin - 158, margin, 158, 34, 17);
+    ctx.fill();
+    ctx.fillStyle = '#0b1f14';
+    ctx.font = `800 15px "${font}"`;
+    ctx.textAlign = 'center';
+    ctx.fillText('Modrinth Project', width - margin - 79, margin + 10);
+    ctx.textAlign = 'left';
+  }
   
   // Icon
   if (!contentOnly && data.icon) {
@@ -962,6 +976,16 @@ export async function drawProjectCard(data) {
     ctx.fillStyle = COLORS.textSec;
     ctx.font = `16px "${font}"`;
     hTy = wrapText(ctx, (data.summary || '').substring(0, 150), hTx, hTy, headerTextW, 24, 2, true) + 12;
+  }
+
+  if (!contentOnly) {
+    ctx.fillStyle = '#e7fbef';
+    roundRect(ctx, hTx, hTy + 2, 104, 24, 12);
+    ctx.fill();
+    ctx.fillStyle = '#137a3d';
+    ctx.font = `800 12px "${font}"`;
+    ctx.fillText('MODRINTH', hTx + 12, hTy + 8);
+    hTy += 30;
   }
 
   // Stats & Tags Row
@@ -1389,6 +1413,16 @@ export async function drawProjectCardCF(data) {
   // ================= Header Draw =================
   let cy = margin;
   if (!contentOnly) {
+      ctx.fillStyle = C_ACCENT;
+      roundRect(ctx, width - margin - 150, cy, 150, 34, 4);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `bold 15px "${font}"`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText('CurseForge', width - margin - 75, cy + 8);
+      ctx.textAlign = 'left';
+
       // Icon
       const iconSize = 80;
       if (data.icon) {
@@ -2039,9 +2073,7 @@ export async function drawProjectCardCFNotify(data, latest) {
     try {
       const icon = await loadImageSafe(data.icon);
       ctx.save();
-      ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 10;
       roundRect(ctx, margin, cy, iconSize, iconSize, 8); ctx.fill();
-      ctx.shadowColor = 'transparent';
       roundRect(ctx, margin, cy, iconSize, iconSize, 8); ctx.clip();
       ctx.drawImage(icon, margin, cy, iconSize, iconSize); ctx.restore();
     } catch (e) {

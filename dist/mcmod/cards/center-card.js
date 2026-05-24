@@ -258,12 +258,9 @@ async function drawCenterCardImpl(uid, logger) {
     ctx.fillRect(0, 0, width, bannerH);
     // Header
     const cardTop = bannerH - cardOverlap;
-    ctx.shadowColor = 'rgba(0,0,0,0.1)';
-    ctx.shadowBlur = 10;
     ctx.fillStyle = '#fff';
     (0, rendering_1.roundRect)(ctx, 20, cardTop, width - 40, headerH, 10);
     ctx.fill();
-    ctx.shadowBlur = 0;
     const avX = 50, avY = cardTop - 30;
     ctx.beginPath();
     ctx.arc(avX + 50, avY + 50, 54, 0, Math.PI * 2);

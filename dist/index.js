@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Config = exports.inject = exports.name = void 0;
+exports.normalizeConfig = normalizeConfig;
 exports.apply = apply;
 const koishi_1 = require("koishi");
 const cfmr = __importStar(require("./plugins/cfmr"));
@@ -77,8 +78,107 @@ exports.Config = koishi_1.Schema.object({
     cfmr: cfmr.Config.default({}).description('CurseForge/Modrinth 搜索与图片卡片'),
     mcmod: mcmod.Config.default({}).description('MCMod.cn 搜索与图片卡片'),
 });
+const DEFAULT_PREFIXES = { cf: 'cf', mr: 'mr', cnmc: 'cnmc' };
+const DEFAULT_NOTIFY = {
+    enabled: false,
+    interval: 30 * 60 * 1000,
+    adminAuthority: 3,
+    stateFile: 'data/cfmrmod_notify_state.json',
+    configFile: 'data/cfmrmod_notify_config.json',
+    groups: [],
+};
+const DEFAULT_CFMR = {
+    pageSize: 10,
+    cacheTtl: 5 * 60 * 1000,
+    requestTimeout: 15000,
+    sendLink: true,
+    debug: false,
+    curseforgeApiKey: '',
+    curseforgeGameId: 432,
+    maxCanvasHeight: 8000,
+    render: {
+        emoji: {
+            twemoji: true,
+            cdn: 'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72',
+        },
+        image: {
+            fetchWithHeaders: true,
+        },
+    },
+};
+const DEFAULT_MCMOD = {
+    sendLink: true,
+    cookie: '',
+    autoCookie: false,
+    cookieCheckInterval: 30 * 60 * 1000,
+    debug: false,
+    comment: {
+        pageSize: 5,
+        maxPageSize: 10,
+        includeImages: true,
+    },
+    render: {
+        emoji: {
+            twemoji: true,
+            cdn: 'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72',
+        },
+        image: {
+            fetchWithHeaders: true,
+        },
+    },
+};
+function isPlainObject(value) {
+    return value && typeof value === 'object' && !Array.isArray(value);
+}
+function cloneValue(value) {
+    if (Array.isArray(value))
+        return value.map(item => cloneValue(item));
+    if (isPlainObject(value)) {
+        const result = {};
+        Object.keys(value).forEach(key => {
+            result[key] = cloneValue(value[key]);
+        });
+        return result;
+    }
+    return value;
+}
+function mergeDefaults(defaults, input) {
+    const result = cloneValue(defaults);
+    if (!isPlainObject(input))
+        return result;
+    Object.keys(input).forEach(key => {
+        const value = input[key];
+        if (value === undefined)
+            return;
+        if (isPlainObject(value) && isPlainObject(result[key])) {
+            result[key] = mergeDefaults(result[key], value);
+            return;
+        }
+        result[key] = cloneValue(value);
+    });
+    return result;
+}
+function normalizeConfig(input) {
+    var _a, _b;
+    const prefixes = mergeDefaults(DEFAULT_PREFIXES, input === null || input === void 0 ? void 0 : input.prefixes);
+    const debug = (_a = input === null || input === void 0 ? void 0 : input.debug) !== null && _a !== void 0 ? _a : false;
+    const timeouts = Number((_b = input === null || input === void 0 ? void 0 : input.timeouts) !== null && _b !== void 0 ? _b : 60000) || 60000;
+    const cfmrConfig = mergeDefaults(DEFAULT_CFMR, input === null || input === void 0 ? void 0 : input.cfmr);
+    const mcmodConfig = mergeDefaults(DEFAULT_MCMOD, input === null || input === void 0 ? void 0 : input.mcmod);
+    return {
+        prefixes,
+        timeouts,
+        debug,
+        nlu: cloneValue((input === null || input === void 0 ? void 0 : input.nlu) || {}),
+        cfmr: cfmrConfig,
+        mcmod: mcmodConfig,
+        notify: mergeDefaults(DEFAULT_NOTIFY, input === null || input === void 0 ? void 0 : input.notify),
+    };
+}
 function apply(ctx, config) {
+    var _a, _b;
     const logger = ctx.logger(exports.name);
+    const runtimeConfig = normalizeConfig(config || {});
     let canvasAdapter = null;
     try {
         // Dynamic load: keep package lightweight for market scan.
@@ -96,21 +196,21 @@ function apply(ctx, config) {
     catch (e) {
         logger.warn(`未检测到 @napi-rs/canvas，图片生成功能已禁用。请在 Koishi 实例目录执行: npm i @napi-rs/canvas (${(e === null || e === void 0 ? void 0 : e.message) || e})`);
     }
-    const prefixes = (config === null || config === void 0 ? void 0 : config.prefixes) || {};
+    const prefixes = runtimeConfig.prefixes;
     const shared = {
         prefixes,
-        timeouts: config === null || config === void 0 ? void 0 : config.timeouts,
-        debug: config === null || config === void 0 ? void 0 : config.debug,
+        timeouts: runtimeConfig.timeouts,
+        debug: runtimeConfig.debug,
         canvas: canvasAdapter,
     };
     if (cfmr.apply)
-        cfmr.apply(ctx, { ...((config === null || config === void 0 ? void 0 : config.cfmr) || {}), ...shared });
+        cfmr.apply(ctx, { ...runtimeConfig.cfmr, ...shared, debug: (_a = runtimeConfig.cfmr.debug) !== null && _a !== void 0 ? _a : shared.debug });
     if (mcmod.apply)
-        mcmod.apply(ctx, { ...((config === null || config === void 0 ? void 0 : config.mcmod) || {}), ...shared });
+        mcmod.apply(ctx, { ...runtimeConfig.mcmod, ...shared, debug: (_b = runtimeConfig.mcmod.debug) !== null && _b !== void 0 ? _b : shared.debug });
     if (nlu.apply)
-        nlu.apply(ctx, (config === null || config === void 0 ? void 0 : config.nlu) || {}, shared);
+        nlu.apply(ctx, runtimeConfig.nlu, shared);
     if (notify.apply && canvasAdapter)
-        notify.apply(ctx, (config === null || config === void 0 ? void 0 : config.notify) || {}, { cfmr: (config === null || config === void 0 ? void 0 : config.cfmr) || {} });
+        notify.apply(ctx, runtimeConfig.notify, { cfmr: runtimeConfig.cfmr });
     if (!canvasAdapter)
         logger.warn('notify 更新卡片功能已禁用（缺少 @napi-rs/canvas）。');
 }

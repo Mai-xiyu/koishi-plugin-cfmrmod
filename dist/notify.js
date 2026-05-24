@@ -88,8 +88,33 @@ async function fetchCurseForgeChangelogMirror(projectId, fileId, timeout) {
         return '';
     }
 }
-function apply(ctx, config, options) {
+function clonePlain(value) {
+    if (Array.isArray(value))
+        return value.map(item => clonePlain(item));
+    if (value && typeof value === 'object') {
+        const result = {};
+        Object.keys(value).forEach(key => {
+            result[key] = clonePlain(value[key]);
+        });
+        return result;
+    }
+    return value;
+}
+function normalizeNotifyConfig(input) {
+    var _a;
+    const source = clonePlain(input || {});
+    return {
+        enabled: typeof source.enabled === 'boolean' ? source.enabled : false,
+        interval: Number(source.interval) || 30 * 60 * 1000,
+        adminAuthority: Number((_a = source.adminAuthority) !== null && _a !== void 0 ? _a : 3) || 3,
+        stateFile: source.stateFile || 'data/cfmrmod_notify_state.json',
+        configFile: source.configFile || 'data/cfmrmod_notify_config.json',
+        groups: Array.isArray(source.groups) ? source.groups : [],
+    };
+}
+function apply(ctx, rawConfig, options) {
     const logger = ctx.logger('cfmr-notify');
+    const config = normalizeNotifyConfig(rawConfig);
     ctx.model.extend('cfmrmod_notify_sub', {
         id: 'unsigned',
         channelId: 'string',

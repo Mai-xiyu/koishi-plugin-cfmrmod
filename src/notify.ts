@@ -79,8 +79,33 @@ async function fetchCurseForgeChangelogMirror(projectId: string, fileId: string,
   }
 }
 
-export function apply(ctx: Context, config: any, options: { cfmr: any }) {
+function clonePlain(value: any): any {
+  if (Array.isArray(value)) return value.map(item => clonePlain(item));
+  if (value && typeof value === 'object') {
+    const result: any = {};
+    Object.keys(value).forEach(key => {
+      result[key] = clonePlain(value[key]);
+    });
+    return result;
+  }
+  return value;
+}
+
+function normalizeNotifyConfig(input: any) {
+  const source = clonePlain(input || {});
+  return {
+    enabled: typeof source.enabled === 'boolean' ? source.enabled : false,
+    interval: Number(source.interval) || 30 * 60 * 1000,
+    adminAuthority: Number(source.adminAuthority ?? 3) || 3,
+    stateFile: source.stateFile || 'data/cfmrmod_notify_state.json',
+    configFile: source.configFile || 'data/cfmrmod_notify_config.json',
+    groups: Array.isArray(source.groups) ? source.groups : [],
+  };
+}
+
+export function apply(ctx: Context, rawConfig: any, options: { cfmr: any }) {
   const logger = ctx.logger('cfmr-notify');
+  const config = normalizeNotifyConfig(rawConfig);
 
   ctx.model.extend('cfmrmod_notify_sub', {
     id: 'unsigned',

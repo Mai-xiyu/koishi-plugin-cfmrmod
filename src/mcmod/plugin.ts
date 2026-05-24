@@ -3,8 +3,9 @@ import { createInfoCard, drawAuthorCard, drawCenterCardImpl, drawMcmodCommentLis
 import { PAGE_SIZE, TIMEOUT_MS } from './constants';
 import { configureMcmodCookie, ensureValidCookie, loadManagedCookie } from './http';
 import { configureRenderer } from './rendering';
-import { fetchSearch, formatListPage } from './search';
+import { fetchDirectSearch, fetchSearch, formatListPage } from './search';
 import { toImageSrc } from './utils';
+import { selectExactSearchResult } from '../match';
 
 // ================= 状态管理和常量 =================
 const searchStates = new Map();
@@ -205,6 +206,57 @@ export function apply(ctx, config) {
     return nextState;
   }
 
+  async function renderSearchItem(session, item, type) {
+    await ensureValidCookie();
+    let img;
+    if (type === 'author') img = await drawAuthorCard(item.link);
+    else if (type === 'user') {
+      const uid = item.link.match(/\/(\d+)(?:\.html|\/)?$/)?.[1] || '0';
+      img = await drawCenterCardImpl(uid, logger);
+    }
+    else if (type === 'mod' || type === 'pack') img = await drawModCard(item.link);
+    else if (type === 'tutorial') img = await drawTutorialCard(item.link);
+    else img = await createInfoCard(item.link, type);
+
+    await session.send(h.image(await toImageSrc(img)));
+    if (config.sendLink) await session.send(`链接: ${item.link}`);
+  }
+
+  async function renderDirectSearchTarget(session, item, type, options = {}) {
+    clearState(session.cid);
+    clearCommentState(session.cid);
+    clearCommentListState(session.cid);
+
+    if ((options as any)?.commentTarget) {
+      const state = {
+        url: item.link,
+        target: String((options as any).commentTarget),
+        pageSize: getCommentPageSize((options as any)?.size),
+        page: 1,
+        totalPages: 1,
+        messageIds: [],
+        timer: null,
+      };
+      await renderCommentPage(session, state, state.page);
+      return;
+    }
+
+    if ((options as any)?.comments) {
+      const state = {
+        url: item.link,
+        pageSize: getCommentPageSize((options as any)?.size),
+        page: 1,
+        totalPages: 1,
+        messageIds: [],
+        timer: null,
+      };
+      await renderCommentListPage(session, state, state.page);
+      return;
+    }
+
+    await renderSearchItem(session, item, type);
+  }
+
   // --- 注册指令 ---
   const prefix = config?.prefixes?.cnmc || 'cnmc';
   const commandTypes = ['mod', 'data', 'pack', 'tutorial', 'author', 'user'];
@@ -214,6 +266,7 @@ export function apply(ctx, config) {
     `${prefix}.mod/.data/.pack/.tutorial/.author/.user <关键词>`,
     `${prefix}.comment <url> <楼层|id:评论ID> [page]  | 渲染评论与子评论`,
     `${prefix}.comments <url> [page]  | 渲染页面主评论列表`,
+    '选项：--direct 精确命中时直接出图，--comments 精确命中时渲染评论列表',
     '列表交互：输入序号查看，n 下一页，p 上一页，q 退出',
   ].join('\n'));
 
@@ -272,7 +325,11 @@ export function apply(ctx, config) {
 
   commandTypes.forEach(type => {
       ctx.command(`${prefix}.${type} <keyword:text>`)
-         .action(async ({ session }, keyword) => {
+         .option('direct', '-d, --direct 精确命中时直接渲染')
+         .option('comments', '--comments 精确命中时渲染主评论列表')
+         .option('commentTarget', '--comment-target <target:string> 精确命中时渲染指定楼层或评论 ID')
+         .option('size', '-s, --size <size:number> 评论单页数量')
+         .action(async ({ session, options }, keyword) => {
            if (!keyword) return '请输入关键词。';
              
              // 将搜索任务加入队列
@@ -280,31 +337,26 @@ export function apply(ctx, config) {
                  try {
                     if (config.debug) logger.debug(`[${session.userId}] 正在搜索 ${keyword} ...`);
                     
-                    let results = await fetchSearch(keyword, type);
+                    const directMode = !!(options?.direct || options?.comments || options?.commentTarget);
+                    const searchResult = directMode
+                      ? await fetchDirectSearch(keyword, type)
+                      : { results: await fetchSearch(keyword, type), direct: null };
+                    let results = searchResult.results;
 
                     if (!results.length) {
                         await session.send('未找到相关结果。(备用也没用，我劝你换个关键词试试)');
                         return;
                     }
-                    
-                    
+
+                    const directItem = searchResult.direct || (directMode ? selectExactSearchResult(results, keyword) : null);
+                    if (directItem) {
+                        await renderDirectSearchTarget(session, directItem, type, options);
+                        return;
+                    }
+
                     // 单结果直接处理
                     if (results.length === 1) {
-                        const item = results[0];
-                        await ensureValidCookie();
-                        
-                        let img;
-                        if (type === 'author') img = await drawAuthorCard(item.link);
-                        else if (type === 'user') {
-                            const uid = item.link.match(/\/(\d+)(?:\.html|\/)?$/)?.[1] || '0';
-                            img = await drawCenterCardImpl(uid, logger);
-                        }
-                        else if (type === 'mod' || type === 'pack') img = await drawModCard(item.link);
-                        else if (type === 'tutorial') img = await drawTutorialCard(item.link);
-                        else img = await createInfoCard(item.link, type);
-                        
-                        await session.send(h.image(await toImageSrc(img)));
-                        if (config.sendLink) await session.send(`链接: ${item.link}`);
+                        await renderDirectSearchTarget(session, results[0], type, options);
                         return;
                     }
                     
@@ -329,27 +381,36 @@ export function apply(ctx, config) {
   });
 
   ctx.command(`${prefix} <keyword:text>`)
-     .action(async ({ session }, keyword) => {
+     .option('direct', '-d, --direct 精确命中时直接渲染')
+     .option('comments', '--comments 精确命中时渲染主评论列表')
+     .option('commentTarget', '--comment-target <target:string> 精确命中时渲染指定楼层或评论 ID')
+     .option('size', '-s, --size <size:number> 评论单页数量')
+     .action(async ({ session, options }, keyword) => {
        if (!keyword) return '请输入关键词。';
 
        enqueue(session, 'search-mod', async () => {
          try {
             if (config.debug) logger.debug(`[${session.userId}] 正在搜索 ${keyword} ...`);
 
-            const results = await fetchSearch(keyword, 'mod');
+            const directMode = !!(options?.direct || options?.comments || options?.commentTarget);
+            const searchResult = directMode
+              ? await fetchDirectSearch(keyword, 'mod')
+              : { results: await fetchSearch(keyword, 'mod'), direct: null };
+            const results = searchResult.results;
 
             if (!results.length) {
                 await session.send('未找到相关结果。(备用也没用，我劝你换个关键词试试)');
                 return;
             }
 
-            if (results.length === 1) {
-                const item = results[0];
-                await ensureValidCookie();
+            const directItem = searchResult.direct || (directMode ? selectExactSearchResult(results, keyword) : null);
+            if (directItem) {
+                await renderDirectSearchTarget(session, directItem, 'mod', options);
+                return;
+            }
 
-                const img = await drawModCard(item.link);
-                await session.send(h.image(await toImageSrc(img)));
-                if (config.sendLink) await session.send(`链接: ${item.link}`);
+            if (results.length === 1) {
+                await renderDirectSearchTarget(session, results[0], 'mod', options);
                 return;
             }
 

@@ -2,6 +2,7 @@ const { Schema, h } = require('koishi');
 const fetch = require('node-fetch');
 const cheerio = require('cheerio');
 const { marked } = require('marked');
+import { selectExactSearchResult } from '../match';
 let createCanvas;
 let loadImage;
 let Path2DRef;
@@ -2573,7 +2574,28 @@ export function apply(ctx, config) {
             '\n请输入序号查看详情 (p/n 翻页, q 退出)';
   };
 
-  const handleSearch = async (session, platform, type, keyword, useEnglish = false) => {
+  const renderProjectResult = async (session, item, useEnglish = false) => {
+      let detailData;
+      if (item.platform === 'Modrinth') detailData = await fetchModrinthDetail(item.id, config.requestTimeout);
+      else detailData = await fetchCurseForgeDetail(item.id, config.curseforgeApiKey, config.requestTimeout, item._cfUrl);
+      detailData.type = item.type;
+      detailData._lang = useEnglish ? 'en' : 'zh';
+      const imgBufs = detailData.source === 'CurseForge'
+        ? await drawProjectCardCF({
+            ...detailData,
+            maxCanvasHeight: config.maxCanvasHeight || 8000
+          })
+        : await drawProjectCard({
+            ...detailData,
+            maxCanvasHeight: config.maxCanvasHeight || 8000
+          });
+      for (const buf of imgBufs) {
+        await session.send(h.image(await toImageSrc(buf)));
+      }
+      if (config.sendLink) await session.send(`${useEnglish ? 'Link' : '链接'}: ${detailData.url}`);
+  };
+
+  const handleSearch = async (session, platform, type, keyword, useEnglish = false, direct = false) => {
       if (!keyword) { await session.send(useEnglish ? 'Please enter a keyword' : '请输入关键词'); return; }
       let results = [];
       try {
@@ -2581,27 +2603,17 @@ export function apply(ctx, config) {
         else results = await searchCurseForge(keyword, type, config.curseforgeApiKey, config.requestTimeout, config.curseforgeGameId);
       } catch(e) { await session.send(`${useEnglish ? 'Search error' : '搜索出错'}: ${e.message}`); return; }
       if (!results.length) { await session.send(useEnglish ? 'No results found' : '未找到结果'); return; }
+      const directItem = direct ? selectExactSearchResult(results, keyword) : null;
+      if (directItem) {
+        try {
+          await renderProjectResult(session, directItem, useEnglish);
+        } catch(e) { logger.error(e); return session.send(`${useEnglish ? 'Generation failed' : '生成失败'}: ${e.message}`); }
+        return;
+      }
       if (results.length === 1) {
         const item = results[0];
         try {
-          let detailData;
-          if (item.platform === 'Modrinth') detailData = await fetchModrinthDetail(item.id, config.requestTimeout);
-          else detailData = await fetchCurseForgeDetail(item.id, config.curseforgeApiKey, config.requestTimeout, item._cfUrl);
-          detailData.type = item.type;
-          detailData._lang = useEnglish ? 'en' : 'zh';
-          const imgBufs = detailData.source === 'CurseForge'
-            ? await drawProjectCardCF({
-                ...detailData,
-                maxCanvasHeight: config.maxCanvasHeight || 8000
-              })
-            : await drawProjectCard({
-                ...detailData,
-                maxCanvasHeight: config.maxCanvasHeight || 8000
-              });
-          for (const buf of imgBufs) {
-            await session.send(h.image(await toImageSrc(buf)));
-          }
-          if (config.sendLink) await session.send(`${useEnglish ? 'Link' : '链接'}: ${detailData.url}`);
+          await renderProjectResult(session, item, useEnglish);
         } catch(e) { logger.error(e); return session.send(`${useEnglish ? 'Generation failed' : '生成失败'}: ${e.message}`); }
         return;
       }
@@ -2638,24 +2650,7 @@ export function apply(ctx, config) {
               await tryWithdraw(session, state.listMessageIds);
               states.delete(session.cid);
               try {
-                  let detailData;
-                  if (item.platform === 'Modrinth') detailData = await fetchModrinthDetail(item.id, config.requestTimeout);
-                  else detailData = await fetchCurseForgeDetail(item.id, config.curseforgeApiKey, config.requestTimeout, item._cfUrl);
-                  detailData.type = item.type;
-                  detailData._lang = useEnglish ? 'en' : 'zh';
-                  const imgBufs = detailData.source === 'CurseForge'
-                    ? await drawProjectCardCF({
-                        ...detailData,
-                        maxCanvasHeight: config.maxCanvasHeight || 8000
-                      })
-                    : await drawProjectCard({
-                        ...detailData,
-                        maxCanvasHeight: config.maxCanvasHeight || 8000
-                      });
-                  for (const buf of imgBufs) {
-                    await session.send(h.image(await toImageSrc(buf)));
-                  }
-                  if (config.sendLink) await session.send(`${useEnglish ? 'Link' : '链接'}: ${detailData.url}`);
+                  await renderProjectResult(session, item, useEnglish);
               } catch(e) { logger.error(e); return session.send(`${useEnglish ? 'Generation failed' : '生成失败'}: ${e.message}`); }
               return;
           }
@@ -2707,32 +2702,36 @@ export function apply(ctx, config) {
   ['mod', 'pack', 'resource', 'shader', 'plugin'].forEach(t => {
       ctx.command(`${mrPrefix}.${t} [...keyword]`, `搜索 Modrinth ${t}`)
         .option('e', '-e 使用英文', { fallback: false })
+        .option('direct', '-d, --direct 精确命中时直接渲染', { fallback: false })
         .action((argv, ...args) => {
           const allArgs = args.flat().map(String);
           const kw = allArgs.join(' ');
-          return handleSearch(argv.session, 'mr', t, kw, argv.options?.e === true);
+          return handleSearch(argv.session, 'mr', t, kw, argv.options?.e === true, argv.options?.direct === true);
         });
       ctx.command(`${cfPrefix}.${t} [...keyword]`, `搜索 CurseForge ${t}`)
         .option('e', '-e 使用英文', { fallback: false })
+        .option('direct', '-d, --direct 精确命中时直接渲染', { fallback: false })
         .action((argv, ...args) => {
           const allArgs = args.flat().map(String);
           const kw = allArgs.join(' ');
-          return handleSearch(argv.session, 'cf', t, kw, argv.options?.e === true);
+          return handleSearch(argv.session, 'cf', t, kw, argv.options?.e === true, argv.options?.direct === true);
         });
   });
   ctx.command(`${mrPrefix} [...keyword]`, '搜索 Modrinth 模组')
     .option('e', '-e 使用英文', { fallback: false })
+    .option('direct', '-d, --direct 精确命中时直接渲染', { fallback: false })
     .action((argv, ...args) => {
       const allArgs = args.flat().map(String);
       const kw = allArgs.join(' ');
-      return handleSearch(argv.session, 'mr', 'mod', kw, argv.options?.e === true);
+      return handleSearch(argv.session, 'mr', 'mod', kw, argv.options?.e === true, argv.options?.direct === true);
     });
   ctx.command(`${cfPrefix} [...keyword]`, '搜索 CurseForge 模组')
     .option('e', '-e 使用英文', { fallback: false })
+    .option('direct', '-d, --direct 精确命中时直接渲染', { fallback: false })
     .action((argv, ...args) => {
       const allArgs = args.flat().map(String);
       const kw = allArgs.join(' ');
-      return handleSearch(argv.session, 'cf', 'mod', kw, argv.options?.e === true);
+      return handleSearch(argv.session, 'cf', 'mod', kw, argv.options?.e === true, argv.options?.direct === true);
     });
 }
 

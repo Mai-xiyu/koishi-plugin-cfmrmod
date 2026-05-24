@@ -9,6 +9,7 @@ const http_1 = require("./http");
 const rendering_1 = require("./rendering");
 const search_1 = require("./search");
 const utils_1 = require("./utils");
+const match_1 = require("../match");
 // ================= 状态管理和常量 =================
 const searchStates = new Map();
 const commentStates = new Map();
@@ -196,6 +197,57 @@ function apply(ctx, config) {
         commentListStates.set(session.cid, nextState);
         return nextState;
     }
+    async function renderSearchItem(session, item, type) {
+        var _a;
+        await (0, http_1.ensureValidCookie)();
+        let img;
+        if (type === 'author')
+            img = await (0, cards_1.drawAuthorCard)(item.link);
+        else if (type === 'user') {
+            const uid = ((_a = item.link.match(/\/(\d+)(?:\.html|\/)?$/)) === null || _a === void 0 ? void 0 : _a[1]) || '0';
+            img = await (0, cards_1.drawCenterCardImpl)(uid, logger);
+        }
+        else if (type === 'mod' || type === 'pack')
+            img = await (0, cards_1.drawModCard)(item.link);
+        else if (type === 'tutorial')
+            img = await (0, cards_1.drawTutorialCard)(item.link);
+        else
+            img = await (0, cards_1.createInfoCard)(item.link, type);
+        await session.send(h.image(await (0, utils_1.toImageSrc)(img)));
+        if (config.sendLink)
+            await session.send(`链接: ${item.link}`);
+    }
+    async function renderDirectSearchTarget(session, item, type, options = {}) {
+        clearState(session.cid);
+        clearCommentState(session.cid);
+        clearCommentListState(session.cid);
+        if (options === null || options === void 0 ? void 0 : options.commentTarget) {
+            const state = {
+                url: item.link,
+                target: String(options.commentTarget),
+                pageSize: getCommentPageSize(options === null || options === void 0 ? void 0 : options.size),
+                page: 1,
+                totalPages: 1,
+                messageIds: [],
+                timer: null,
+            };
+            await renderCommentPage(session, state, state.page);
+            return;
+        }
+        if (options === null || options === void 0 ? void 0 : options.comments) {
+            const state = {
+                url: item.link,
+                pageSize: getCommentPageSize(options === null || options === void 0 ? void 0 : options.size),
+                page: 1,
+                totalPages: 1,
+                messageIds: [],
+                timer: null,
+            };
+            await renderCommentListPage(session, state, state.page);
+            return;
+        }
+        await renderSearchItem(session, item, type);
+    }
     // --- 注册指令 ---
     const prefix = ((_a = config === null || config === void 0 ? void 0 : config.prefixes) === null || _a === void 0 ? void 0 : _a.cnmc) || 'cnmc';
     const commandTypes = ['mod', 'data', 'pack', 'tutorial', 'author', 'user'];
@@ -204,6 +256,7 @@ function apply(ctx, config) {
         `${prefix}.mod/.data/.pack/.tutorial/.author/.user <关键词>`,
         `${prefix}.comment <url> <楼层|id:评论ID> [page]  | 渲染评论与子评论`,
         `${prefix}.comments <url> [page]  | 渲染页面主评论列表`,
+        '选项：--direct 精确命中时直接出图，--comments 精确命中时渲染评论列表',
         '列表交互：输入序号查看，n 下一页，p 上一页，q 退出',
     ].join('\n'));
     ctx.command(`${prefix}.comment <url:string> <target:string> [page:number]`, '渲染 MCMod 评论与子评论')
@@ -263,40 +316,35 @@ function apply(ctx, config) {
     });
     commandTypes.forEach(type => {
         ctx.command(`${prefix}.${type} <keyword:text>`)
-            .action(async ({ session }, keyword) => {
+            .option('direct', '-d, --direct 精确命中时直接渲染')
+            .option('comments', '--comments 精确命中时渲染主评论列表')
+            .option('commentTarget', '--comment-target <target:string> 精确命中时渲染指定楼层或评论 ID')
+            .option('size', '-s, --size <size:number> 评论单页数量')
+            .action(async ({ session, options }, keyword) => {
             if (!keyword)
                 return '请输入关键词。';
             // 将搜索任务加入队列
             enqueue(session, `search-${type}`, async () => {
-                var _a;
                 try {
                     if (config.debug)
                         logger.debug(`[${session.userId}] 正在搜索 ${keyword} ...`);
-                    let results = await (0, search_1.fetchSearch)(keyword, type);
+                    const directMode = !!((options === null || options === void 0 ? void 0 : options.direct) || (options === null || options === void 0 ? void 0 : options.comments) || (options === null || options === void 0 ? void 0 : options.commentTarget));
+                    const searchResult = directMode
+                        ? await (0, search_1.fetchDirectSearch)(keyword, type)
+                        : { results: await (0, search_1.fetchSearch)(keyword, type), direct: null };
+                    let results = searchResult.results;
                     if (!results.length) {
                         await session.send('未找到相关结果。(备用也没用，我劝你换个关键词试试)');
                         return;
                     }
+                    const directItem = searchResult.direct || (directMode ? (0, match_1.selectExactSearchResult)(results, keyword) : null);
+                    if (directItem) {
+                        await renderDirectSearchTarget(session, directItem, type, options);
+                        return;
+                    }
                     // 单结果直接处理
                     if (results.length === 1) {
-                        const item = results[0];
-                        await (0, http_1.ensureValidCookie)();
-                        let img;
-                        if (type === 'author')
-                            img = await (0, cards_1.drawAuthorCard)(item.link);
-                        else if (type === 'user') {
-                            const uid = ((_a = item.link.match(/\/(\d+)(?:\.html|\/)?$/)) === null || _a === void 0 ? void 0 : _a[1]) || '0';
-                            img = await (0, cards_1.drawCenterCardImpl)(uid, logger);
-                        }
-                        else if (type === 'mod' || type === 'pack')
-                            img = await (0, cards_1.drawModCard)(item.link);
-                        else if (type === 'tutorial')
-                            img = await (0, cards_1.drawTutorialCard)(item.link);
-                        else
-                            img = await (0, cards_1.createInfoCard)(item.link, type);
-                        await session.send(h.image(await (0, utils_1.toImageSrc)(img)));
-                        if (config.sendLink)
-                            await session.send(`链接: ${item.link}`);
+                        await renderDirectSearchTarget(session, results[0], type, options);
                         return;
                     }
                     // 多结果：初始化状态（隔离在 session.cid）
@@ -319,25 +367,33 @@ function apply(ctx, config) {
         });
     });
     ctx.command(`${prefix} <keyword:text>`)
-        .action(async ({ session }, keyword) => {
+        .option('direct', '-d, --direct 精确命中时直接渲染')
+        .option('comments', '--comments 精确命中时渲染主评论列表')
+        .option('commentTarget', '--comment-target <target:string> 精确命中时渲染指定楼层或评论 ID')
+        .option('size', '-s, --size <size:number> 评论单页数量')
+        .action(async ({ session, options }, keyword) => {
         if (!keyword)
             return '请输入关键词。';
         enqueue(session, 'search-mod', async () => {
             try {
                 if (config.debug)
                     logger.debug(`[${session.userId}] 正在搜索 ${keyword} ...`);
-                const results = await (0, search_1.fetchSearch)(keyword, 'mod');
+                const directMode = !!((options === null || options === void 0 ? void 0 : options.direct) || (options === null || options === void 0 ? void 0 : options.comments) || (options === null || options === void 0 ? void 0 : options.commentTarget));
+                const searchResult = directMode
+                    ? await (0, search_1.fetchDirectSearch)(keyword, 'mod')
+                    : { results: await (0, search_1.fetchSearch)(keyword, 'mod'), direct: null };
+                const results = searchResult.results;
                 if (!results.length) {
                     await session.send('未找到相关结果。(备用也没用，我劝你换个关键词试试)');
                     return;
                 }
+                const directItem = searchResult.direct || (directMode ? (0, match_1.selectExactSearchResult)(results, keyword) : null);
+                if (directItem) {
+                    await renderDirectSearchTarget(session, directItem, 'mod', options);
+                    return;
+                }
                 if (results.length === 1) {
-                    const item = results[0];
-                    await (0, http_1.ensureValidCookie)();
-                    const img = await (0, cards_1.drawModCard)(item.link);
-                    await session.send(h.image(await (0, utils_1.toImageSrc)(img)));
-                    if (config.sendLink)
-                        await session.send(`链接: ${item.link}`);
+                    await renderDirectSearchTarget(session, results[0], 'mod', options);
                     return;
                 }
                 clearState(session.cid);

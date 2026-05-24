@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.fetchMcmodCommentThread = fetchMcmodCommentThread;
+exports.fetchMcmodCommentList = fetchMcmodCommentList;
+exports.drawMcmodCommentList = drawMcmodCommentList;
 exports.drawMcmodCommentThread = drawMcmodCommentThread;
 const cheerio = require('cheerio');
 const constants_1 = require("../constants");
@@ -10,17 +12,74 @@ const utils_1 = require("../utils");
 const COMMENT_ROW_URL = `${constants_1.BASE_URL}/frame/comment/CommentRow/`;
 const COMMENT_REPLY_URL = `${constants_1.BASE_URL}/frame/comment/CommentReply/`;
 const MCMOD_REPLY_API_PAGE_SIZE = 5;
-function parseCommentContext(url, html) {
-    var _a, _b, _c;
-    const type = ((_a = String(html || '').match(/comment_type\s*=\s*['"]([^'"]+)['"]/)) === null || _a === void 0 ? void 0 : _a[1]) ||
-        (String(url).includes('/class/') ? 'class' : '');
-    const container = ((_b = String(html || '').match(/comment_container\s*=\s*['"]([^'"]+)['"]/)) === null || _b === void 0 ? void 0 : _b[1]) ||
-        ((_c = String(url).match(/\/(?:class|item|post)\/(\d+)/)) === null || _c === void 0 ? void 0 : _c[1]) ||
-        '';
-    if (!type || !container) {
-        throw new Error('无法从页面解析评论上下文。');
+function readPageTitle(html, context) {
+    const $ = cheerio.load(html);
+    return ((0, utils_1.cleanText)($('meta[property="og:title"]').attr('content') || '') ||
+        (0, utils_1.cleanText)($('title').text()).replace(/\s*-\s*MC百科.*$/, '') ||
+        context.container);
+}
+function inferCommentContextFromUrl(url) {
+    let parsed;
+    try {
+        parsed = new URL(url);
     }
-    return { type, container };
+    catch {
+        return null;
+    }
+    const path = parsed.pathname || '';
+    const simpleMatch = path.match(/^\/(class|modpack|post|author)\/(\d+)(?:\.html)?\/?$/i);
+    if (simpleMatch)
+        return { type: simpleMatch[1].toLowerCase(), container: simpleMatch[2] };
+    if (/^\/item\//i.test(path)) {
+        const itemMatch = path.match(/^\/item\/([^/?#]+)(?:\.html)?\/?$/i);
+        if (itemMatch)
+            return { type: 'item', container: itemMatch[1] };
+    }
+    if (/^center\.mcmod\.cn$/i.test(parsed.hostname)) {
+        const centerMatch = path.match(/^\/(\d+)\/?$/);
+        if (centerMatch)
+            return { type: 'center', container: centerMatch[1] };
+    }
+    return null;
+}
+function extractCommentContext(url, html) {
+    var _a, _b;
+    const text = String(html || '');
+    const type = ((_a = text.match(/comment_type\s*=\s*['"]([^'"]+)['"]/)) === null || _a === void 0 ? void 0 : _a[1]) || '';
+    const container = ((_b = text.match(/comment_container\s*=\s*['"]([^'"]+)['"]/)) === null || _b === void 0 ? void 0 : _b[1]) || '';
+    if (type && container)
+        return { type, container };
+    if (!text.includes('common-comment-block'))
+        return null;
+    return inferCommentContextFromUrl(url);
+}
+function buildCommentPageCandidates(pageUrl) {
+    const candidates = [pageUrl];
+    try {
+        const parsed = new URL(pageUrl);
+        const classMatch = parsed.pathname.match(/^\/class\/(\d+)(?:\.html)?\/?$/i);
+        if (classMatch)
+            candidates.push(`${constants_1.BASE_URL}/modpack/${classMatch[1]}.html`);
+    }
+    catch { }
+    return Array.from(new Set(candidates));
+}
+async function fetchCommentDocument(url, timeout) {
+    const firstUrl = (0, utils_1.fixUrl)(url);
+    if (!firstUrl)
+        throw new Error('MCMod 页面地址不能为空。');
+    let lastHtml = '';
+    for (const pageUrl of buildCommentPageCandidates(firstUrl)) {
+        const html = await (0, http_1.fetchMcmodText)(pageUrl, { headers: (0, http_1.getHeaders)(pageUrl) }, timeout);
+        lastHtml = html;
+        const context = extractCommentContext(pageUrl, html);
+        if (context)
+            return { pageUrl, html, context };
+    }
+    const fallback = extractCommentContext(firstUrl, lastHtml);
+    if (fallback)
+        return { pageUrl: firstUrl, html: lastHtml, context: fallback };
+    throw new Error('无法从页面解析评论上下文。');
 }
 function parseTarget(input) {
     var _a, _b, _c;
@@ -69,11 +128,18 @@ function normalizeFloor(value) {
     const match = String(value || '').match(/(\d+)/);
     return match ? Number(match[1]) : null;
 }
+function cleanCommentFloor(value) {
+    const raw = String(value || '');
+    if (!raw)
+        return '';
+    const text = (0, utils_1.cleanText)(cheerio.load(`<div>${raw}</div>`)('div').text() || raw);
+    return text.replace(/\s+/g, ' ').trim();
+}
 function rowToComment(row) {
     var _a, _b, _c, _d, _e, _f, _g;
     return {
         id: String((row === null || row === void 0 ? void 0 : row.id) || ''),
-        floor: String((row === null || row === void 0 ? void 0 : row.floor) || ''),
+        floor: cleanCommentFloor(row === null || row === void 0 ? void 0 : row.floor),
         floorNo: normalizeFloor(row === null || row === void 0 ? void 0 : row.floor),
         user: {
             id: String(((_a = row === null || row === void 0 ? void 0 : row.user) === null || _a === void 0 ? void 0 : _a.id) || '0'),
@@ -161,20 +227,15 @@ async function fetchReplies(commentId, pageUrl, page, pageSize, timeout) {
     };
 }
 async function fetchMcmodCommentThread(url, targetInput, page = 1, pageSize = 5, timeout = 15000) {
-    const pageUrl = (0, utils_1.fixUrl)(url);
-    if (!pageUrl)
-        throw new Error('MCMod 页面地址不能为空。');
-    const html = await (0, http_1.fetchMcmodText)(pageUrl, { headers: (0, http_1.getHeaders)(pageUrl) }, timeout);
-    const context = parseCommentContext(pageUrl, html);
+    const { pageUrl, html, context } = await fetchCommentDocument(url, timeout);
     const target = parseTarget(targetInput);
     const found = await findComment(context, pageUrl, target, timeout);
-    const replies = await fetchReplies(found.comment.id, pageUrl, Math.max(1, Number(page) || 1), pageSize, timeout);
-    const title = (0, utils_1.cleanText)(cheerio.load(html)('meta[property="og:title"]').attr('content') || '') ||
-        (0, utils_1.cleanText)(cheerio.load(html)('title').text()).replace(/\s*-\s*MC百科.*$/, '') ||
-        context.container;
+    const replies = found.comment.replyCount > 0
+        ? await fetchReplies(found.comment.id, pageUrl, Math.max(1, Number(page) || 1), pageSize, timeout)
+        : { replies: [], totalRows: 0, totalPages: 1 };
     return {
         pageUrl,
-        title,
+        title: readPageTitle(html, context),
         context,
         target,
         main: found.comment,
@@ -185,6 +246,55 @@ async function fetchMcmodCommentThread(url, targetInput, page = 1, pageSize = 5,
         replyTotalRows: replies.totalRows,
         replyTotalPages: replies.totalPages,
         replies: replies.replies,
+    };
+}
+async function fetchMcmodCommentList(url, page = 1, pageSize = 5, timeout = 15000) {
+    const listPage = Math.max(1, Number(page) || 1);
+    const listPageSize = Math.max(1, Math.floor(Number(pageSize) || 5));
+    const { pageUrl, html, context } = await fetchCommentDocument(url, timeout);
+    const firstData = await fetchCommentRows(context, pageUrl, 1, timeout);
+    const firstRows = Array.isArray(firstData.row) ? firstData.row : [];
+    const pageInfo = firstData.page || {};
+    const apiTotalRows = Number(pageInfo.total_row || 0) || 0;
+    const apiTotalPages = Number(pageInfo.total_page || pageInfo.end || (firstRows.length ? 1 : 0)) || (firstRows.length ? 1 : 0);
+    const apiPageSize = apiTotalRows && apiTotalPages
+        ? Math.max(1, Math.ceil(apiTotalRows / apiTotalPages))
+        : Math.max(1, firstRows.length || listPageSize);
+    const pinnedRows = apiTotalRows && firstRows.length > apiPageSize ? firstRows.length - apiPageSize : 0;
+    const totalRows = apiTotalRows ? apiTotalRows + pinnedRows : firstRows.length;
+    const totalPages = Math.max(1, Math.ceil(totalRows / listPageSize));
+    const start = (listPage - 1) * listPageSize;
+    const comments = [];
+    if (start < totalRows) {
+        let collected = [];
+        if (start < firstRows.length) {
+            collected = firstRows.slice(start, Math.min(firstRows.length, start + listPageSize));
+        }
+        let globalIndex = start + collected.length;
+        let apiPage = Math.floor(Math.max(0, globalIndex - firstRows.length) / apiPageSize) + 2;
+        let offset = Math.max(0, globalIndex - firstRows.length) % apiPageSize;
+        while (collected.length < listPageSize && apiPage <= apiTotalPages) {
+            const data = await fetchCommentRows(context, pageUrl, apiPage, timeout);
+            const rows = Array.isArray(data.row) ? data.row : [];
+            if (!rows.length)
+                break;
+            const need = listPageSize - collected.length;
+            collected = collected.concat(rows.slice(offset, offset + need));
+            globalIndex = start + collected.length;
+            apiPage += 1;
+            offset = 0;
+        }
+        collected.forEach(row => comments.push(rowToComment(row)));
+    }
+    return {
+        pageUrl,
+        title: readPageTitle(html, context),
+        context,
+        page: listPage,
+        pageSize: listPageSize,
+        totalRows,
+        totalPages,
+        comments,
     };
 }
 function parseContentNodes(html, includeImages) {
@@ -225,6 +335,8 @@ function parseContentNodes(html, includeImages) {
                     buffer += alt;
                 else if (isEmotion)
                     buffer += ' [表情] ';
+                else
+                    buffer += ' [图片] ';
                 return;
             }
             flush();
@@ -357,6 +469,139 @@ function badge(ctx, text, x, y, font, color = '#1f7a9d') {
     ctx.fillStyle = color;
     ctx.fillText(text, x + 7, y + 4);
     return w;
+}
+function measureBadge(ctx, text, font) {
+    ctx.font = `700 12px "${font}"`;
+    return ctx.measureText(text).width + 14;
+}
+function commentPreviewText(html, maxChars = 180) {
+    const nodes = parseContentNodes(html, false);
+    const text = nodes
+        .map(node => node.type === 'text' ? node.text : (node.alt ? `[图片: ${node.alt}]` : '[图片]'))
+        .join('\n')
+        .replace(/[ \t\f\v]+/g, ' ')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    if (!text)
+        return '（无内容）';
+    return text.length > maxChars ? `${text.slice(0, maxChars).trim()}...` : text;
+}
+async function drawMcmodCommentList(list, options = {}) {
+    const font = rendering_1.GLOBAL_FONT_FAMILY;
+    const width = 900;
+    const margin = 28;
+    const contentW = width - margin * 2;
+    const bodyW = contentW - 124;
+    const dummyCanvas = (0, rendering_1.createCanvas)(100, 100);
+    const dummy = dummyCanvas.getContext('2d');
+    for (const comment of list.comments) {
+        comment._avatar = await loadAvatar(comment.user.avatar, list.pageUrl);
+        comment._preview = commentPreviewText(comment.content, options.previewChars || 180);
+    }
+    const headerH = 112;
+    const listHeaderH = 58;
+    const itemHeights = list.comments.map(comment => {
+        dummy.font = `15px "${font}"`;
+        const previewH = (0, rendering_1.wrapText)(dummy, comment._preview, 0, 0, bodyW, 23, 4, false);
+        return Math.max(118, 84 + previewH);
+    });
+    const emptyH = list.comments.length ? 0 : 68;
+    const itemsH = itemHeights.reduce((sum, h) => sum + h + 12, 0);
+    const totalH = margin + headerH + 18 + listHeaderH + itemsH + emptyH + 42;
+    const canvas = (0, rendering_1.createCanvas)(width, totalH);
+    const ctx = canvas.getContext('2d');
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#eef4f7';
+    ctx.fillRect(0, 0, width, totalH);
+    ctx.fillStyle = '#0f5d7a';
+    (0, rendering_1.roundRect)(ctx, margin, margin, contentW, headerH, 14);
+    ctx.fill();
+    ctx.fillStyle = '#2f9ab7';
+    (0, rendering_1.roundRect)(ctx, margin + 18, margin + 18, 78, 78, 12);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `800 30px "${font}"`;
+    ctx.textAlign = 'center';
+    ctx.fillText('MC', margin + 57, margin + 32);
+    ctx.font = `700 13px "${font}"`;
+    ctx.fillText('MOD', margin + 57, margin + 66);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#fff';
+    ctx.font = `800 28px "${font}"`;
+    (0, rendering_1.wrapText)(ctx, list.title || 'MCMod 评论列表', margin + 116, margin + 20, contentW - 146, 34, 2, true);
+    ctx.font = `600 14px "${font}"`;
+    ctx.fillStyle = 'rgba(255,255,255,0.84)';
+    ctx.fillText(`mcmod.cn / ${list.context.type}:${list.context.container}`, margin + 116, margin + 82);
+    let y = margin + headerH + 18;
+    ctx.fillStyle = '#153743';
+    ctx.font = `800 20px "${font}"`;
+    ctx.fillText(`主评论 ${list.page}/${list.totalPages}`, margin + 4, y + 4);
+    ctx.fillStyle = '#607d8b';
+    ctx.font = `13px "${font}"`;
+    ctx.fillText(`每页 ${list.pageSize} 条，共 ${list.totalRows} 条；输入 n/p 翻页，q 退出`, margin + 4, y + 32);
+    y += listHeaderH;
+    if (!list.comments.length) {
+        ctx.fillStyle = '#ffffff';
+        (0, rendering_1.roundRect)(ctx, margin, y, contentW, 56, 10);
+        ctx.fill();
+        ctx.strokeStyle = '#dceaf0';
+        ctx.lineWidth = 1;
+        (0, rendering_1.roundRect)(ctx, margin, y, contentW, 56, 10);
+        ctx.stroke();
+        ctx.fillStyle = '#78909c';
+        ctx.font = `14px "${font}"`;
+        ctx.fillText('本页没有评论。', margin + 18, y + 18);
+        y += emptyH;
+    }
+    for (let i = 0; i < list.comments.length; i++) {
+        const comment = list.comments[i];
+        const cardH = itemHeights[i];
+        ctx.fillStyle = '#ffffff';
+        (0, rendering_1.roundRect)(ctx, margin, y, contentW, cardH, 10);
+        ctx.fill();
+        ctx.strokeStyle = '#dceaf0';
+        ctx.lineWidth = 1;
+        (0, rendering_1.roundRect)(ctx, margin, y, contentW, cardH, 10);
+        ctx.stroke();
+        drawAvatar(ctx, comment._avatar, margin + 22, y + 22, 58, comment.user.name, font);
+        let tx = margin + 98;
+        let ty = y + 18;
+        let right = width - margin - 18;
+        const replyText = `回复 ${comment.replyCount}`;
+        if (comment.replyCount > 0) {
+            const w = measureBadge(ctx, replyText, font);
+            badge(ctx, replyText, right - w, ty + 1, font, '#607d8b');
+            right -= w + 8;
+        }
+        if (comment.user.level !== undefined) {
+            const levelText = `Lv.${comment.user.level}`;
+            const w = measureBadge(ctx, levelText, font);
+            badge(ctx, levelText, right - w, ty + 1, font, '#1f7a9d');
+            right -= w + 8;
+        }
+        if (comment.floor) {
+            const w = measureBadge(ctx, comment.floor, font);
+            badge(ctx, comment.floor, right - w, ty + 1, font, '#d2691e');
+            right -= w + 8;
+        }
+        ctx.fillStyle = '#102a35';
+        ctx.font = `800 18px "${font}"`;
+        await (0, rendering_1.drawTextWithTwemoji)(ctx, comment.user.name, tx, ty, Math.max(80, right - tx), 23, 1, true);
+        ty += 28;
+        ctx.fillStyle = '#78909c';
+        ctx.font = `13px "${font}"`;
+        ctx.fillText(`${comment.time.source || '--'}  ${comment.time.range || ''}  ID:${comment.id}`, tx, ty);
+        ty += 30;
+        ctx.fillStyle = '#263238';
+        ctx.font = `15px "${font}"`;
+        await (0, rendering_1.drawTextWithTwemoji)(ctx, comment._preview, tx, ty, bodyW, 23, 4, true);
+        y += cardH + 12;
+    }
+    ctx.fillStyle = '#78909c';
+    ctx.font = `12px "${font}"`;
+    ctx.textAlign = 'center';
+    ctx.fillText('Generated by Koishi | Powered by MCMod', width / 2, totalH - 24);
+    return await canvas.encode('png');
 }
 async function drawMcmodCommentThread(thread, options = {}) {
     var _a;

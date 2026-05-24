@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.createInfoCard = exports.drawCenterCardImpl = exports.drawCenterCard = exports.drawAuthorCard = exports.drawTutorialCard = exports.drawModCard = void 0;
+exports.fetchMcmodCommentThread = exports.drawMcmodCommentThread = exports.createInfoCard = exports.drawCenterCardImpl = exports.drawCenterCard = exports.drawAuthorCard = exports.drawTutorialCard = exports.drawModCard = void 0;
 var mod_card_1 = require("./cards/mod-card");
 Object.defineProperty(exports, "drawModCard", { enumerable: true, get: function () { return mod_card_1.drawModCard; } });
 var tutorial_card_1 = require("./cards/tutorial-card");
@@ -12,3 +12,6 @@ Object.defineProperty(exports, "drawCenterCard", { enumerable: true, get: functi
 Object.defineProperty(exports, "drawCenterCardImpl", { enumerable: true, get: function () { return center_card_1.drawCenterCardImpl; } });
 var info_card_1 = require("./cards/info-card");
 Object.defineProperty(exports, "createInfoCard", { enumerable: true, get: function () { return info_card_1.createInfoCard; } });
+var comment_card_1 = require("./cards/comment-card");
+Object.defineProperty(exports, "drawMcmodCommentThread", { enumerable: true, get: function () { return comment_card_1.drawMcmodCommentThread; } });
+Object.defineProperty(exports, "fetchMcmodCommentThread", { enumerable: true, get: function () { return comment_card_1.fetchMcmodCommentThread; } });

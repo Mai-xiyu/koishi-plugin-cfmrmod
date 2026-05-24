@@ -135,14 +135,9 @@ async function createInfoCard(url, type) {
     }
     // 窗口 (Acrylic)
     const winX = margin, winY = margin;
-    ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.2)';
-    ctx.shadowBlur = 40;
-    ctx.shadowOffsetY = 20;
     ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
     (0, rendering_1.roundRect)(ctx, winX, winY, width - margin * 2, windowH, 16);
     ctx.fill();
-    ctx.restore();
     ctx.strokeStyle = 'rgba(255,255,255,0.6)';
     ctx.lineWidth = 1;
     (0, rendering_1.roundRect)(ctx, winX, winY, width - margin * 2, windowH, 16);

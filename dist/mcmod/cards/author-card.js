@@ -203,17 +203,11 @@ async function drawAuthorCard(url) {
     }
     // 4. 绘制 Acrylic 窗口
     const windowW = width - windowMargin * 2;
-    ctx.save();
-    // 窗口阴影
-    ctx.shadowColor = 'rgba(0,0,0,0.3)';
-    ctx.shadowBlur = 40;
-    ctx.shadowOffsetY = 20;
     // 窗口背景 (40% Acrylic - 模拟)
     // 使用白色半透明 + 背景模糊效果 (Canvas 无法直接 backdrop-filter，只能通过叠加半透明白)
     ctx.fillStyle = 'rgba(255, 255, 255, 0.75)'; // 提高不透明度以遮盖背景杂乱
     (0, rendering_1.roundRect)(ctx, windowMargin, windowMargin, windowW, windowH, 20);
     ctx.fill();
-    ctx.restore();
     // 窗口边框
     ctx.strokeStyle = 'rgba(255,255,255,0.6)';
     ctx.lineWidth = 1.5;
@@ -244,13 +238,10 @@ async function drawAuthorCard(url) {
     const avatarSize = 100;
     // Avatar
     ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.1)';
-    ctx.shadowBlur = 10;
     ctx.beginPath();
     ctx.arc(contentX + avatarSize / 2, cursorY + avatarSize / 2, avatarSize / 2, 0, Math.PI * 2);
     ctx.fillStyle = '#fff';
     ctx.fill();
-    ctx.shadowBlur = 0;
     ctx.clip();
     if (avatarUrl) {
         try {
@@ -331,11 +322,8 @@ async function drawAuthorCard(url) {
                 ly += 45;
             }
             ctx.fillStyle = '#fff';
-            ctx.shadowColor = 'rgba(0,0,0,0.05)';
-            ctx.shadowBlur = 5;
             (0, rendering_1.roundRect)(ctx, lx, ly, lw, 34, 17);
             ctx.fill();
-            ctx.shadowBlur = 0;
             ctx.fillStyle = '#333';
             ctx.fillText(l.n, lx + 15, ly + 8);
             lx += lw + 10;

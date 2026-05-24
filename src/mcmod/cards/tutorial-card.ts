@@ -328,12 +328,9 @@ export async function drawTutorialCard(url) {
 
     // 窗口主体
     const winX = margin, winY = margin;
-    ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 50; ctx.shadowOffsetY = 20;
     ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
     roundRect(ctx, winX, winY, width - margin * 2, windowH, 16);
     ctx.fill();
-    ctx.restore();
     ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1;
     roundRect(ctx, winX, winY, width - margin * 2, windowH, 16); ctx.stroke();
 
@@ -487,10 +484,8 @@ export async function drawTutorialCard(url) {
         const dx = cx + (contentW - node.dw) / 2;
             
         ctx.save();
-        ctx.shadowColor = 'rgba(0,0,0,0.1)'; ctx.shadowBlur = 15; ctx.shadowOffsetY = 5;
         // 绘制图片 (圆角效果)
         roundRect(ctx, dx, dy, node.dw, node.dh, 8); 
-        ctx.shadowColor = 'transparent'; // clip 前清除阴影以免影响性能
         ctx.clip();
         ctx.drawImage(node.img, dx, dy, node.dw, node.dh);
         ctx.restore();

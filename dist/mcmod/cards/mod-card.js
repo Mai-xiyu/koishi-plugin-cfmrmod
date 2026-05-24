@@ -319,6 +319,439 @@ async function drawModCard(url) {
     await Promise.all(authors.slice(0, 3).map(async (author) => {
         author.imgCache = await loadOptionalImage(author.i);
     }));
+    {
+        const nativeWidth = 860;
+        const font = rendering_1.GLOBAL_FONT_FAMILY;
+        const margin = 28;
+        const contentW = nativeWidth - margin * 2;
+        const cardPad = 24;
+        const innerW = contentW - cardPad * 2;
+        const sectionGap = 14;
+        const nativeStatsItems = [
+            { l: '评分', v: score }, { l: '热度', v: viewNum },
+            { l: '推荐', v: pushNum }, { l: '收藏', v: favNum },
+            { l: '关注', v: subNum },
+        ];
+        if (fillRate !== '--')
+            nativeStatsItems.push({ l: '填充率', v: fillRate });
+        if (yIndex)
+            nativeStatsItems.push({ l: '昨日指数', v: yIndex });
+        const dummyC = (0, rendering_1.createCanvas)(100, 100);
+        const dummy = dummyC.getContext('2d');
+        const drawImageCoverNative = (ctx, img, x, y, w, h, radius) => {
+            const scale = Math.max(w / img.width, h / img.height);
+            ctx.save();
+            (0, rendering_1.roundRect)(ctx, x, y, w, h, radius);
+            ctx.clip();
+            ctx.drawImage(img, x + (w - img.width * scale) / 2, y + (h - img.height * scale) / 2, img.width * scale, img.height * scale);
+            ctx.restore();
+        };
+        const getInitialsNative = (text) => {
+            var _a;
+            const value = (0, utils_1.cleanText)(text).replace(/^\[[^\]]+\]\s*/, '');
+            if (!value)
+                return 'MOD';
+            const ascii = (_a = value.match(/[A-Za-z0-9]+/g)) === null || _a === void 0 ? void 0 : _a.join('').slice(0, 2);
+            return ascii ? ascii.toUpperCase() : Array.from(value).slice(0, 2).join('');
+        };
+        const measureChipRows = (items, maxW, fontSize = 13, padX = 18, rowH = 26, rowGap = 8) => {
+            if (!items || !items.length)
+                return 0;
+            dummy.font = `700 ${fontSize}px "${font}"`;
+            let x = 0;
+            let rows = 1;
+            items.forEach(item => {
+                const label = typeof item === 'string' ? item : item.t;
+                const w = dummy.measureText(label).width + padX;
+                if (x && x + w > maxW) {
+                    rows++;
+                    x = 0;
+                }
+                x += w + 8;
+            });
+            return rows * rowH + (rows - 1) * rowGap;
+        };
+        const prepareDescNodeImages = async () => {
+            for (const node of descNodes) {
+                if (node.type === 'i') {
+                    try {
+                        const img = await (0, rendering_1.loadImageWithHeaders)(node.src, constants_1.BASE_URL);
+                        const scale = Math.min(innerW / img.width, 420 / img.height, 1);
+                        node.imgCache = img;
+                        node.dw = img.width * scale;
+                        node.dh = img.height * scale;
+                    }
+                    catch {
+                        node.imgFailed = true;
+                    }
+                }
+                else if (node.type === 'g') {
+                    for (const item of node.items || []) {
+                        try {
+                            const img = await (0, rendering_1.loadImageWithHeaders)(item.src, constants_1.BASE_URL);
+                            const scale = Math.min(innerW / img.width, 420 / img.height, 1);
+                            item.imgCache = img;
+                            item.dw = img.width * scale;
+                            item.dh = img.height * scale;
+                        }
+                        catch {
+                            item.error = true;
+                        }
+                    }
+                }
+            }
+        };
+        await prepareDescNodeImages();
+        const measureDescNodes = () => {
+            var _a;
+            let h = 0;
+            for (const node of descNodes) {
+                if (node.type === 't') {
+                    const isHeader = node.tag === 'h';
+                    const size = isHeader ? 21 : 15;
+                    const lh = isHeader ? 30 : 25;
+                    dummy.font = `${isHeader ? '800' : '500'} ${size}px "${font}"`;
+                    h += (0, rendering_1.wrapText)(dummy, node.val, 0, 0, innerW, lh, 5000, false) + (isHeader ? 12 : 10);
+                }
+                else if (node.type === 'li') {
+                    dummy.font = `500 15px "${font}"`;
+                    h += (0, rendering_1.wrapText)(dummy, node.val, 0, 0, innerW - 24, 25, 5000, false) + 10;
+                }
+                else if (node.type === 'tb') {
+                    h += (((_a = (0, rendering_1.measureTableLayout)(dummy, node, innerW, 22, `500 14px "${font}"`, `800 14px "${font}"`)) === null || _a === void 0 ? void 0 : _a.totalH) || 0) + 16;
+                }
+                else if (node.type === 'g') {
+                    for (const item of node.items || []) {
+                        if (item.error || !item.imgCache)
+                            h += 72;
+                        else {
+                            const captionH = item.caption ? (0, rendering_1.wrapText)(dummy, item.caption, 0, 0, innerW, 22, 4, false) : 0;
+                            h += item.dh + captionH + 18;
+                        }
+                    }
+                }
+                else if (node.type === 'i') {
+                    h += node.imgCache && !node.imgFailed ? node.dh + 16 : 72;
+                }
+            }
+            return h;
+        };
+        const measureVersions = () => {
+            if (!versions.length)
+                return 0;
+            let h = 30;
+            versions.forEach(v => {
+                dummy.font = `700 14px "${font}"`;
+                const labelW = Math.min(130, dummy.measureText(v.l).width + 14);
+                dummy.font = `500 14px "${font}"`;
+                h += Math.max(26, (0, rendering_1.wrapText)(dummy, v.v, 0, 0, innerW - labelW - 12, 22, 200, false)) + 8;
+            });
+            return h;
+        };
+        const headerTextW = innerW - 108 - 22;
+        dummy.font = `800 30px "${font}"`;
+        const titleH = (0, rendering_1.wrapText)(dummy, title, 0, 0, headerTextW, 36, 3, false);
+        dummy.font = `500 15px "${font}"`;
+        const subH = subTitle ? (0, rendering_1.wrapText)(dummy, subTitle, 0, 0, headerTextW, 22, 2, false) + 8 : 0;
+        const authorH = authors.length ? 30 : 0;
+        const tagH = tags.length ? measureChipRows(tags, innerW) + 18 : 0;
+        const headerH = Math.max(132, cardPad * 2 + Math.max(108, titleH + subH + authorH + tagH + 12));
+        const coverH = showCover ? 218 : 0;
+        const statsRows = nativeStatsItems.length ? Math.ceil(nativeStatsItems.length / 4) : 0;
+        const statsH = statsRows ? 38 + statsRows * 72 + (statsRows - 1) * 12 + cardPad * 2 : 0;
+        const propsRows = props.length ? Math.ceil(props.length / 2) : 0;
+        const propsH = propsRows ? 38 + propsRows * 36 + cardPad * 2 : 0;
+        const versionH = versions.length || links.length
+            ? 38 + measureVersions() + (links.length ? measureChipRows(links, innerW, 13, 22, 28, 8) + 14 : 0) + cardPad * 2
+            : 0;
+        const descH = descNodes.length ? 40 + measureDescNodes() + cardPad * 2 : 0;
+        const totalH = margin + headerH
+            + (coverH ? sectionGap + coverH : 0)
+            + (statsH ? sectionGap + statsH : 0)
+            + (propsH ? sectionGap + propsH : 0)
+            + (versionH ? sectionGap + versionH : 0)
+            + (descH ? sectionGap + descH : 0)
+            + margin + 28;
+        const canvas = (0, rendering_1.createCanvas)(nativeWidth, totalH);
+        const ctx = canvas.getContext('2d');
+        ctx.textBaseline = 'top';
+        ctx.fillStyle = '#eef4f7';
+        ctx.fillRect(0, 0, nativeWidth, totalH);
+        const drawPanel = (x, y, w, h) => {
+            ctx.fillStyle = '#ffffff';
+            (0, rendering_1.roundRect)(ctx, x, y, w, h, 12);
+            ctx.fill();
+            ctx.strokeStyle = '#dceaf0';
+            ctx.lineWidth = 1;
+            (0, rendering_1.roundRect)(ctx, x, y, w, h, 12);
+            ctx.stroke();
+        };
+        const drawSectionTitle = (label, x, y) => {
+            ctx.fillStyle = '#102f3d';
+            ctx.font = `800 19px "${font}"`;
+            ctx.fillText(label, x, y);
+            ctx.fillStyle = '#2f9ab7';
+            (0, rendering_1.roundRect)(ctx, x, y + 27, 42, 4, 2);
+            ctx.fill();
+        };
+        const drawChip = (label, x, y, bg = '#e8f4f8', color = '#1f6f8b', padX = 18, h = 26) => {
+            ctx.font = `700 13px "${font}"`;
+            const w = ctx.measureText(label).width + padX;
+            ctx.fillStyle = bg;
+            (0, rendering_1.roundRect)(ctx, x, y, w, h, 7);
+            ctx.fill();
+            ctx.fillStyle = color;
+            ctx.fillText(label, x + padX / 2, y + 6);
+            return w;
+        };
+        const drawChipRows = (items, x, y, maxW, mapper) => {
+            let cx = x;
+            let cy = y;
+            items.forEach(item => {
+                const info = mapper(item);
+                ctx.font = `700 13px "${font}"`;
+                const w = ctx.measureText(info.label).width + (info.padX || 18);
+                if (cx !== x && cx + w > x + maxW) {
+                    cx = x;
+                    cy += (info.h || 26) + 8;
+                }
+                drawChip(info.label, cx, cy, info.bg, info.color, info.padX || 18, info.h || 26);
+                cx += w + 8;
+            });
+            return cy + 28;
+        };
+        let y = margin;
+        drawPanel(margin, y, contentW, headerH);
+        const hx = margin + cardPad;
+        const hy = y + cardPad;
+        if (iconImg)
+            drawImageCoverNative(ctx, iconImg, hx, hy, 108, 108, 16);
+        else {
+            const grad = ctx.createLinearGradient(hx, hy, hx + 108, hy + 108);
+            grad.addColorStop(0, '#0f5d7a');
+            grad.addColorStop(1, '#2f9ab7');
+            ctx.fillStyle = grad;
+            (0, rendering_1.roundRect)(ctx, hx, hy, 108, 108, 16);
+            ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.font = `800 30px "${font}"`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(getInitialsNative(title), hx + 54, hy + 54);
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+        }
+        let tx = hx + 130;
+        let ty = hy - 2;
+        ctx.fillStyle = '#102f3d';
+        ctx.font = `800 30px "${font}"`;
+        ty = (0, rendering_1.wrapText)(ctx, title, tx, ty, headerTextW, 36, 3, true) + 4;
+        if (subTitle) {
+            ctx.fillStyle = '#607d8b';
+            ctx.font = `500 15px "${font}"`;
+            ty = (0, rendering_1.wrapText)(ctx, subTitle, tx, ty, headerTextW, 22, 2, true) + 8;
+        }
+        if (authors.length) {
+            let ax = tx;
+            for (const author of authors.slice(0, 3)) {
+                if (author.imgCache) {
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.arc(ax + 12, ty + 12, 12, 0, Math.PI * 2);
+                    ctx.clip();
+                    ctx.drawImage(author.imgCache, ax, ty, 24, 24);
+                    ctx.restore();
+                }
+                else {
+                    ctx.fillStyle = '#dce7ef';
+                    ctx.beginPath();
+                    ctx.arc(ax + 12, ty + 12, 12, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                ctx.fillStyle = '#3a5964';
+                ctx.font = `700 13px "${font}"`;
+                let name = author.n;
+                while (ctx.measureText(name).width > 120 && name.length > 2)
+                    name = `${name.slice(0, -2)}...`;
+                ctx.fillText(name, ax + 30, ty + 5);
+                ax += ctx.measureText(name).width + 46;
+                if (ax > hx + innerW - 80)
+                    break;
+            }
+            ty += 34;
+        }
+        if (tags.length) {
+            drawChipRows(tags, tx, ty, headerTextW, tag => ({ label: tag.t, bg: tag.bg, color: tag.c }));
+        }
+        y += headerH;
+        if (showCover) {
+            y += sectionGap;
+            drawImageCoverNative(ctx, coverImg, margin, y, contentW, coverH, 12);
+            y += coverH;
+        }
+        if (statsH) {
+            y += sectionGap;
+            drawPanel(margin, y, contentW, statsH);
+            drawSectionTitle('数据概览', margin + cardPad, y + cardPad);
+            const gridTop = y + cardPad + 48;
+            const cols = 4;
+            const gap = 12;
+            const itemW = (innerW - gap * (cols - 1)) / cols;
+            nativeStatsItems.forEach((s, i) => {
+                const col = i % cols;
+                const row = Math.floor(i / cols);
+                const sx = margin + cardPad + col * (itemW + gap);
+                const sy = gridTop + row * (72 + gap);
+                ctx.fillStyle = '#f3f8fb';
+                (0, rendering_1.roundRect)(ctx, sx, sy, itemW, 72, 10);
+                ctx.fill();
+                ctx.fillStyle = '#6f8791';
+                ctx.font = `700 12px "${font}"`;
+                ctx.fillText(s.l, sx + 14, sy + 13);
+                ctx.fillStyle = '#102f3d';
+                ctx.font = `800 22px "${font}"`;
+                ctx.fillText(String(s.v || '--'), sx + 14, sy + 36);
+            });
+            y += statsH;
+        }
+        if (propsH) {
+            y += sectionGap;
+            drawPanel(margin, y, contentW, propsH);
+            drawSectionTitle('基础信息', margin + cardPad, y + cardPad);
+            const colW = (innerW - 18) / 2;
+            props.forEach((p, i) => {
+                const col = i % 2;
+                const row = Math.floor(i / 2);
+                const px = margin + cardPad + col * (colW + 18);
+                const py = y + cardPad + 50 + row * 36;
+                ctx.fillStyle = '#78909c';
+                ctx.font = `700 13px "${font}"`;
+                ctx.fillText(p.l, px, py);
+                ctx.fillStyle = '#263238';
+                ctx.font = `600 14px "${font}"`;
+                const labelW = Math.min(110, ctx.measureText(p.l).width + 10);
+                let val = p.v;
+                while (ctx.measureText(val).width > colW - labelW && val.length > 4)
+                    val = val.slice(0, -1);
+                if (val.length < p.v.length)
+                    val += '...';
+                ctx.fillText(val, px + labelW, py);
+            });
+            y += propsH;
+        }
+        if (versionH) {
+            y += sectionGap;
+            drawPanel(margin, y, contentW, versionH);
+            drawSectionTitle('版本与链接', margin + cardPad, y + cardPad);
+            let vy = y + cardPad + 50;
+            versions.forEach(v => {
+                ctx.fillStyle = '#0f5d7a';
+                ctx.font = `800 14px "${font}"`;
+                const labelW = Math.min(130, ctx.measureText(v.l).width + 14);
+                ctx.fillText(v.l, margin + cardPad, vy);
+                ctx.fillStyle = '#37474f';
+                ctx.font = `500 14px "${font}"`;
+                vy = (0, rendering_1.wrapText)(ctx, v.v, margin + cardPad + labelW + 12, vy, innerW - labelW - 12, 22, 200, true) + 8;
+            });
+            if (links.length) {
+                vy += 4;
+                drawChipRows(links, margin + cardPad, vy, innerW, link => ({
+                    label: link,
+                    bg: link === 'MC百科' || link === 'Wiki' ? '#e8f4f8' : '#edf5ea',
+                    color: link === 'CurseForge' ? '#d2691e' : (link === 'Modrinth' ? '#1b9b5a' : '#1f6f8b'),
+                    padX: 22,
+                    h: 28,
+                }));
+            }
+            y += versionH;
+        }
+        if (descH) {
+            y += sectionGap;
+            drawPanel(margin, y, contentW, descH);
+            drawSectionTitle('简介', margin + cardPad, y + cardPad);
+            let dy = y + cardPad + 50;
+            for (const node of descNodes) {
+                if (node.type === 't') {
+                    const isHeader = node.tag === 'h';
+                    ctx.fillStyle = isHeader ? '#102f3d' : '#263238';
+                    ctx.font = `${isHeader ? '800' : '500'} ${isHeader ? 21 : 15}px "${font}"`;
+                    dy = await (0, rendering_1.drawTextWithTwemoji)(ctx, node.val, margin + cardPad, dy, innerW, isHeader ? 30 : 25, 5000, true) + (isHeader ? 12 : 10);
+                }
+                else if (node.type === 'li') {
+                    ctx.fillStyle = '#2f9ab7';
+                    ctx.font = `800 15px "${font}"`;
+                    ctx.fillText('•', margin + cardPad + 4, dy);
+                    ctx.fillStyle = '#263238';
+                    ctx.font = `500 15px "${font}"`;
+                    dy = await (0, rendering_1.drawTextWithTwemoji)(ctx, node.val, margin + cardPad + 24, dy, innerW - 24, 25, 5000, true) + 10;
+                }
+                else if (node.type === 'tb') {
+                    const tableH = (0, rendering_1.drawTable)(ctx, node, margin + cardPad, dy, innerW, 22, `500 14px "${font}"`, `800 14px "${font}"`, {
+                        headerBg: '#e8f4f8',
+                        cellBg: '#ffffff',
+                        border: '#c7dbe3',
+                        text: '#263238',
+                    });
+                    dy += tableH + 16;
+                }
+                else if (node.type === 'g') {
+                    for (const item of node.items || []) {
+                        if (item.error || !item.imgCache) {
+                            ctx.fillStyle = '#f3f8fb';
+                            (0, rendering_1.roundRect)(ctx, margin + cardPad, dy, innerW, 56, 8);
+                            ctx.fill();
+                            ctx.fillStyle = '#78909c';
+                            ctx.font = `13px "${font}"`;
+                            ctx.fillText('图片加载失败', margin + cardPad + 14, dy + 18);
+                            dy += 72;
+                            continue;
+                        }
+                        const ix = margin + cardPad + (innerW - item.dw) / 2;
+                        ctx.save();
+                        (0, rendering_1.roundRect)(ctx, ix, dy, item.dw, item.dh, 8);
+                        ctx.clip();
+                        ctx.drawImage(item.imgCache, ix, dy, item.dw, item.dh);
+                        ctx.restore();
+                        dy += item.dh + 8;
+                        if (item.caption) {
+                            ctx.fillStyle = '#607d8b';
+                            ctx.font = `13px "${font}"`;
+                            dy = (0, rendering_1.wrapText)(ctx, item.caption, margin + cardPad, dy, innerW, 22, 4, true) + 10;
+                        }
+                        else {
+                            dy += 10;
+                        }
+                    }
+                }
+                else if (node.type === 'i') {
+                    if (node.imgCache && !node.imgFailed) {
+                        const ix = margin + cardPad + (innerW - node.dw) / 2;
+                        ctx.save();
+                        (0, rendering_1.roundRect)(ctx, ix, dy, node.dw, node.dh, 8);
+                        ctx.clip();
+                        ctx.drawImage(node.imgCache, ix, dy, node.dw, node.dh);
+                        ctx.restore();
+                        dy += node.dh + 16;
+                    }
+                    else {
+                        ctx.fillStyle = '#f3f8fb';
+                        (0, rendering_1.roundRect)(ctx, margin + cardPad, dy, innerW, 56, 8);
+                        ctx.fill();
+                        ctx.fillStyle = '#78909c';
+                        ctx.font = `13px "${font}"`;
+                        ctx.fillText('图片加载失败', margin + cardPad + 14, dy + 18);
+                        dy += 72;
+                    }
+                }
+            }
+            y += descH;
+        }
+        ctx.fillStyle = '#78909c';
+        ctx.font = `12px "${font}"`;
+        ctx.textAlign = 'center';
+        ctx.fillText('mcmod.cn | Generated by Koishi | Plugin By Mai_xiyu', nativeWidth / 2, totalH - 24);
+        return await canvas.encode('png');
+    }
     // --- 2. 布局计算 (macOS 风格) ---
     const width = 800;
     const font = rendering_1.GLOBAL_FONT_FAMILY;
@@ -503,14 +936,9 @@ async function drawModCard(url) {
     // 窗口 (Acrylic)
     const winX = margin;
     const winY = margin;
-    ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.2)';
-    ctx.shadowBlur = 40;
-    ctx.shadowOffsetY = 20;
     ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
     (0, rendering_1.roundRect)(ctx, winX, winY, width - margin * 2, windowH, 16);
     ctx.fill();
-    ctx.restore();
     // 窗口边框
     ctx.strokeStyle = 'rgba(255,255,255,0.5)';
     ctx.lineWidth = 1;

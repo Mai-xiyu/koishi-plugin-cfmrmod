@@ -11,6 +11,7 @@ const search_1 = require("./search");
 const utils_1 = require("./utils");
 // ================= 状态管理和常量 =================
 const searchStates = new Map();
+const commentStates = new Map();
 // ================= Koishi =================
 exports.name = 'mcmod-search';
 exports.Config = Schema.object({
@@ -20,6 +21,11 @@ exports.Config = Schema.object({
     cookieCheckInterval: Schema.number().default(30 * 60 * 1000).description('Cookie/Seed 检查间隔(ms)'),
     fontPath: Schema.string().role('path').description('可选：自定义字体文件路径'),
     debug: Schema.boolean().default(false).description('输出渲染调试日志'),
+    comment: Schema.object({
+        pageSize: Schema.number().default(5).description('评论渲染时每页显示的子评论数量'),
+        maxPageSize: Schema.number().default(10).description('评论渲染单页子评论数量上限'),
+        includeImages: Schema.boolean().default(true).description('评论正文中的图片是否参与渲染'),
+    }).default({}),
     render: Schema.object({
         emoji: Schema.object({
             twemoji: Schema.boolean().default(true).description('启用 Twemoji 图形兜底'),
@@ -54,6 +60,12 @@ function apply(ctx, config) {
         if (state && state.timer)
             clearTimeout(state.timer);
         searchStates.delete(cid);
+    }
+    function clearCommentState(cid) {
+        const state = commentStates.get(cid);
+        if (state && state.timer)
+            clearTimeout(state.timer);
+        commentStates.delete(cid);
     }
     // --- 排队系统 ---
     const queue = [];
@@ -100,15 +112,59 @@ function apply(ctx, config) {
         });
     }
     // 辅助：尝试撤回消息
+    function normalizeMessageIds(messageIds) {
+        if (!messageIds)
+            return [];
+        if (Array.isArray(messageIds))
+            return messageIds;
+        if (typeof messageIds === 'string')
+            return [messageIds];
+        if (messageIds.messageId)
+            return [messageIds.messageId];
+        return [];
+    }
     async function tryWithdraw(session, messageIds) {
-        if (!messageIds || !messageIds.length)
+        const ids = normalizeMessageIds(messageIds);
+        if (!ids.length)
             return;
         try {
-            for (const id of messageIds) {
+            for (const id of ids) {
                 await session.bot.deleteMessage(session.channelId, id);
             }
         }
         catch (e) { }
+    }
+    function getCommentPageSize(input) {
+        const defaults = (config === null || config === void 0 ? void 0 : config.comment) || {};
+        const max = Math.max(1, Number(defaults.maxPageSize || 10) || 10);
+        const raw = Number(input || defaults.pageSize || 5) || 5;
+        return Math.max(1, Math.min(max, Math.floor(raw)));
+    }
+    async function renderCommentPage(session, state, nextPage) {
+        var _a;
+        const page = Math.max(1, Number(nextPage) || 1);
+        const thread = await (0, cards_1.fetchMcmodCommentThread)(state.url, state.target, page, state.pageSize, config.requestTimeout || 15000);
+        if (page > thread.replyTotalPages) {
+            await session.send('没有更多页面了。');
+            return state;
+        }
+        const img = await (0, cards_1.drawMcmodCommentThread)(thread, {
+            includeImages: ((_a = config === null || config === void 0 ? void 0 : config.comment) === null || _a === void 0 ? void 0 : _a.includeImages) !== false,
+        });
+        await tryWithdraw(session, state.messageIds);
+        const sentMessageIds = await session.send(h.image(await (0, utils_1.toImageSrc)(img)));
+        const timer = setTimeout(() => commentStates.delete(session.cid), config.timeouts || constants_1.TIMEOUT_MS);
+        if (state.timer)
+            clearTimeout(state.timer);
+        const nextState = {
+            ...state,
+            page: thread.replyPage,
+            totalPages: thread.replyTotalPages,
+            messageIds: normalizeMessageIds(sentMessageIds),
+            timer,
+        };
+        commentStates.set(session.cid, nextState);
+        return nextState;
     }
     // --- 注册指令 ---
     const prefix = ((_a = config === null || config === void 0 ? void 0 : config.prefixes) === null || _a === void 0 ? void 0 : _a.cnmc) || 'cnmc';
@@ -116,8 +172,36 @@ function apply(ctx, config) {
     ctx.command(`${prefix}.help`).action(() => [
         `${prefix} <关键词>  | 默认搜索 Mod`,
         `${prefix}.mod/.data/.pack/.tutorial/.author/.user <关键词>`,
+        `${prefix}.comment <url> <楼层|id:评论ID> [page]  | 渲染评论与子评论`,
         '列表交互：输入序号查看，n 下一页，p 上一页，q 退出',
     ].join('\n'));
+    ctx.command(`${prefix}.comment <url:string> <target:string> [page:number]`, '渲染 MCMod 评论与子评论')
+        .option('size', '-s, --size <size:number> 子评论单页数量')
+        .action(async ({ session, options }, url, target, page) => {
+        if (!url || !target)
+            return `用法：${prefix}.comment <url> <楼层|id:评论ID> [page] [-s 数量]`;
+        enqueue(session, 'comment-render', async () => {
+            try {
+                await (0, http_1.ensureValidCookie)();
+                clearState(session.cid);
+                clearCommentState(session.cid);
+                const state = {
+                    url,
+                    target,
+                    pageSize: getCommentPageSize(options === null || options === void 0 ? void 0 : options.size),
+                    page: Math.max(1, Number(page) || 1),
+                    totalPages: 1,
+                    messageIds: [],
+                    timer: null,
+                };
+                await renderCommentPage(session, state, state.page);
+            }
+            catch (e) {
+                logger.error(e);
+                await session.send(`评论渲染失败: ${e.message}`);
+            }
+        });
+    });
     commandTypes.forEach(type => {
         ctx.command(`${prefix}.${type} <keyword:text>`)
             .action(async ({ session }, keyword) => {
@@ -216,6 +300,42 @@ function apply(ctx, config) {
                 await session.send(`执行出错: ${e.message}`);
             }
         });
+    });
+    // --- 中间件 (处理评论翻页) ---
+    ctx.middleware(async (session, next) => {
+        const state = commentStates.get(session.cid);
+        if (!state)
+            return next();
+        const input = session.content.trim().toLowerCase();
+        if (input === 'q' || input === '退出') {
+            clearCommentState(session.cid);
+            await tryWithdraw(session, state.messageIds);
+            await session.send('已退出评论翻页。');
+            return;
+        }
+        if (input === 'p' || input === 'n') {
+            enqueue(session, 'comment-page-turn', async () => {
+                const currentState = commentStates.get(session.cid);
+                if (!currentState)
+                    return;
+                const nextPage = input === 'n'
+                    ? Number(currentState.page || 1) + 1
+                    : Number(currentState.page || 1) - 1;
+                if (nextPage < 1 || nextPage > Number(currentState.totalPages || 1)) {
+                    await session.send('没有更多页面了。');
+                    return;
+                }
+                try {
+                    await renderCommentPage(session, currentState, nextPage);
+                }
+                catch (e) {
+                    logger.error(e);
+                    await session.send(`评论翻页失败: ${e.message}`);
+                }
+            });
+            return;
+        }
+        return next();
     });
     // --- 中间件 (处理序号选择) ---
     ctx.middleware(async (session, next) => {

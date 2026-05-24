@@ -1,6 +1,7 @@
 import { COMMON_SELECT_URL, FALLBACK_TYPE_MAP, PAGE_SIZE } from './constants';
-import { fetchMcmodJson, fetchMcmodText, getHeaders } from './http';
+import { fetchMcmodJson, fetchMcmodText, fetchWithTimeout, getHeaders } from './http';
 import { cleanText, fixUrl } from './utils';
+import { normalizeSearchText, selectExactSearchResult } from '../match';
 
 const cheerio = require('cheerio');
 
@@ -54,6 +55,51 @@ export async function fetchSearch(query, typeKey) {
   }
 
   return results;
+}
+
+async function expandDirectQueryFromModrinth(query, typeKey) {
+  if (!['mod', 'pack'].includes(typeKey)) return [];
+  const raw = String(query || '').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{1,64}$/.test(raw)) return [];
+  try {
+    const res = await fetchWithTimeout(`https://api.modrinth.com/v2/project/${encodeURIComponent(raw)}`, {
+      headers: {
+        'User-Agent': 'koishi-plugin-cfmrmod',
+        'Accept': 'application/json',
+      },
+    }, 8000);
+    if (!res.ok) return [];
+    const project = await res.json();
+    const title = cleanText(project?.title || '');
+    const slug = cleanText(project?.slug || '');
+    const aliases = [
+      title.replace(/\s*[\(（][^\)）]+[\)）]\s*/g, ' ').trim(),
+      title,
+      slug,
+    ].filter(Boolean);
+    return Array.from(new Set(aliases));
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchDirectSearch(query, typeKey) {
+  const results = await fetchSearch(query, typeKey);
+  const direct = selectExactSearchResult(results, query);
+  if (direct) return { results, direct, query };
+
+  const aliases = await expandDirectQueryFromModrinth(query, typeKey);
+  for (const alias of aliases) {
+    if (normalizeSearchText(alias) === normalizeSearchText(query)) continue;
+    const expandedResults = await fetchSearch(alias, typeKey);
+    const expandedDirect = selectExactSearchResult(expandedResults, alias, 650) ||
+      (expandedResults.length === 1 ? expandedResults[0] : null);
+    if (expandedDirect) {
+      return { results: expandedResults, direct: expandedDirect, query: alias };
+    }
+  }
+
+  return { results, direct: null, query };
 }
 
 export async function fetchSearchFallback(query, typeKey) {

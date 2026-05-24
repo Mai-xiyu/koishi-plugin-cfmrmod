@@ -1,11 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.fetchSearch = fetchSearch;
+exports.fetchDirectSearch = fetchDirectSearch;
 exports.fetchSearchFallback = fetchSearchFallback;
 exports.formatListPage = formatListPage;
 const constants_1 = require("./constants");
 const http_1 = require("./http");
 const utils_1 = require("./utils");
+const match_1 = require("../match");
 const cheerio = require('cheerio');
 async function fetchSearch(query, typeKey) {
     const filterMap = { mod: 1, pack: 2, data: 3, tutorial: 4, author: 5, user: 6 };
@@ -54,6 +56,53 @@ async function fetchSearch(query, typeKey) {
         }
     }
     return results;
+}
+async function expandDirectQueryFromModrinth(query, typeKey) {
+    if (!['mod', 'pack'].includes(typeKey))
+        return [];
+    const raw = String(query || '').trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{1,64}$/.test(raw))
+        return [];
+    try {
+        const res = await (0, http_1.fetchWithTimeout)(`https://api.modrinth.com/v2/project/${encodeURIComponent(raw)}`, {
+            headers: {
+                'User-Agent': 'koishi-plugin-cfmrmod',
+                'Accept': 'application/json',
+            },
+        }, 8000);
+        if (!res.ok)
+            return [];
+        const project = await res.json();
+        const title = (0, utils_1.cleanText)((project === null || project === void 0 ? void 0 : project.title) || '');
+        const slug = (0, utils_1.cleanText)((project === null || project === void 0 ? void 0 : project.slug) || '');
+        const aliases = [
+            title.replace(/\s*[\(（][^\)）]+[\)）]\s*/g, ' ').trim(),
+            title,
+            slug,
+        ].filter(Boolean);
+        return Array.from(new Set(aliases));
+    }
+    catch {
+        return [];
+    }
+}
+async function fetchDirectSearch(query, typeKey) {
+    const results = await fetchSearch(query, typeKey);
+    const direct = (0, match_1.selectExactSearchResult)(results, query);
+    if (direct)
+        return { results, direct, query };
+    const aliases = await expandDirectQueryFromModrinth(query, typeKey);
+    for (const alias of aliases) {
+        if ((0, match_1.normalizeSearchText)(alias) === (0, match_1.normalizeSearchText)(query))
+            continue;
+        const expandedResults = await fetchSearch(alias, typeKey);
+        const expandedDirect = (0, match_1.selectExactSearchResult)(expandedResults, alias, 650) ||
+            (expandedResults.length === 1 ? expandedResults[0] : null);
+        if (expandedDirect) {
+            return { results: expandedResults, direct: expandedDirect, query: alias };
+        }
+    }
+    return { results, direct: null, query };
 }
 async function fetchSearchFallback(query, typeKey) {
     const apiType = constants_1.FALLBACK_TYPE_MAP[typeKey];

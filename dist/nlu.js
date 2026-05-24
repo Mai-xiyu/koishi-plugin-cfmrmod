@@ -37,6 +37,8 @@ const PLATFORM_TYPES = {
     cf: new Set(['mod', 'pack', 'resource', 'shader', 'plugin']),
     mr: new Set(['mod', 'pack', 'resource', 'shader', 'plugin']),
 };
+const COMMENT_ACTIONS = new Set(['comment', 'comment_thread', 'thread_comment', 'floor_comment', 'reply_comment']);
+const COMMENT_LIST_ACTIONS = new Set(['comments', 'comment_list', 'all_comments', 'comments_list']);
 function normalizeEndpoint(endpoint) {
     const value = String(endpoint || DEFAULT_ENDPOINT).trim().replace(/\/+$/, '');
     if (/\/chat\/completions$/i.test(value))
@@ -72,15 +74,42 @@ function normalizeType(value, platform) {
     return ((_a = PLATFORM_TYPES[platform]) === null || _a === void 0 ? void 0 : _a.has(type)) ? type : 'mod';
 }
 function normalizeAiDecision(raw) {
-    const action = String((raw === null || raw === void 0 ? void 0 : raw.action) || '').trim().toLowerCase();
-    if (action && action !== 'search')
-        return { action: 'ignore' };
-    const query = String((raw === null || raw === void 0 ? void 0 : raw.query) || (raw === null || raw === void 0 ? void 0 : raw.keyword) || '').replace(/[\r\n]+/g, ' ').trim();
-    if (!query)
+    const rawAction = String((raw === null || raw === void 0 ? void 0 : raw.action) || '').trim().toLowerCase();
+    const action = COMMENT_ACTIONS.has(rawAction)
+        ? 'comment_thread'
+        : COMMENT_LIST_ACTIONS.has(rawAction)
+            ? 'comment_list'
+            : (rawAction === 'direct_search' || rawAction === 'open' || rawAction === 'render')
+                ? 'search'
+                : rawAction;
+    if (action && !['search', 'comment_thread', 'comment_list'].includes(action))
         return { action: 'ignore' };
     const platform = normalizePlatform(raw === null || raw === void 0 ? void 0 : raw.platform);
     const type = normalizeType(raw === null || raw === void 0 ? void 0 : raw.type, platform);
-    return { action: 'search', platform, type, query };
+    const url = String((raw === null || raw === void 0 ? void 0 : raw.url) || (raw === null || raw === void 0 ? void 0 : raw.link) || '').replace(/[\r\n]+/g, ' ').trim();
+    const target = String((raw === null || raw === void 0 ? void 0 : raw.target) || (raw === null || raw === void 0 ? void 0 : raw.floor) || (raw === null || raw === void 0 ? void 0 : raw.commentId) || (raw === null || raw === void 0 ? void 0 : raw.comment_id) || '').replace(/[\r\n]+/g, ' ').trim();
+    const page = Math.max(1, Number((raw === null || raw === void 0 ? void 0 : raw.page) || 1) || 1);
+    const size = Math.max(0, Number((raw === null || raw === void 0 ? void 0 : raw.size) || (raw === null || raw === void 0 ? void 0 : raw.pageSize) || (raw === null || raw === void 0 ? void 0 : raw.page_size) || 0) || 0);
+    const query = String((raw === null || raw === void 0 ? void 0 : raw.query) || (raw === null || raw === void 0 ? void 0 : raw.keyword) || '').replace(/[\r\n]+/g, ' ').trim();
+    if (action === 'comment_thread') {
+        if (!target)
+            return { action: 'ignore' };
+        if (url)
+            return { action: 'comment_thread', platform: 'mcmod', type, url, target, page, size };
+        if (query)
+            return { action: 'comment_thread', platform: 'mcmod', type, query, target, page, size };
+        return { action: 'ignore' };
+    }
+    if (action === 'comment_list') {
+        if (url)
+            return { action: 'comment_list', platform: 'mcmod', type, url, page, size };
+        if (query)
+            return { action: 'comment_list', platform: 'mcmod', type, query, page, size };
+        return { action: 'ignore' };
+    }
+    if (!query)
+        return { action: 'ignore' };
+    return { action: 'search', platform, type, query, direct: (raw === null || raw === void 0 ? void 0 : raw.direct) !== false };
 }
 async function requestAi(config, text) {
     var _a, _b, _c, _d, _e, _f;
@@ -97,10 +126,14 @@ async function requestAi(config, text) {
                 role: 'system',
                 content: [
                     '你是 Minecraft 模组搜索意图解析器，只返回 JSON，不要解释。',
-                    'JSON 格式: {"action":"search|ignore","platform":"mcmod|cf|mr","type":"mod|pack|data|tutorial|author|user|resource|shader|plugin","query":"关键词"}',
+                    'JSON 格式一: {"action":"search|ignore","platform":"mcmod|cf|mr","type":"mod|pack|data|tutorial|author|user|resource|shader|plugin","query":"关键词"}',
+                    'JSON 格式二: {"action":"comment_list","url":"MCMod页面URL","page":1,"size":5}，用于渲染某页面全部主评论列表。',
+                    'JSON 格式三: {"action":"comment_thread","url":"MCMod页面URL","target":"3楼|floor:3|id:2112330","page":1,"size":5}，用于渲染某一楼评论及子评论。',
+                    '如果用户要求某个模组/作者/教程的评论但没有 URL，返回 {"action":"comment_list","type":"mod|pack|tutorial|author|user","query":"关键词"}；如果还指定楼层，再用 comment_thread 并包含 target。',
                     '默认 platform 为 mcmod，默认 type 为 mod。',
                     'cf/curseforge 表示 CurseForge，mr/modrinth 表示 Modrinth，cnmc/mcmod/MC百科 表示 mcmod.cn。',
-                    '“查询/搜索/查一下/找一下/模组”等只是意图词，不要放进 query；保留具体模组名、英文名、ID 或关键词。',
+                    '“查询/搜索/查一下/找一下/模组/评论”等只是意图词，不要放进 query；保留具体模组名、英文名、ID 或关键词。',
+                    '当用户说“JEI模组”“JEI本体”“查JEI”时，query 应为 "JEI"，不要扩展成 JEI 附属或更泛的关键词。',
                     '如果不是搜索请求或没有明确关键词，返回 {"action":"ignore"}。',
                 ].join('\n'),
             },
@@ -193,7 +226,34 @@ function isExplicitCommand(text, prefixes) {
     });
 }
 function buildCommand(decision, prefixes) {
-    if (!decision || decision.action !== 'search')
+    if (!decision || decision.action === 'ignore')
+        return '';
+    const cnmcPrefix = (prefixes === null || prefixes === void 0 ? void 0 : prefixes.cnmc) || 'cnmc';
+    if (decision.action === 'comment_thread') {
+        const page = Math.max(1, Number(decision.page || 1) || 1);
+        const size = Number(decision.size || 0) || 0;
+        if (decision.url) {
+            return `${cnmcPrefix}.comment ${decision.url} ${decision.target} ${page}${size > 0 ? ` -s ${Math.floor(size)}` : ''}`;
+        }
+        if (decision.query) {
+            const type = normalizeType(decision.type, 'mcmod');
+            return `${cnmcPrefix}.${type} --direct --comment-target ${decision.target}${size > 0 ? ` -s ${Math.floor(size)}` : ''} ${decision.query}`;
+        }
+        return '';
+    }
+    if (decision.action === 'comment_list') {
+        const page = Math.max(1, Number(decision.page || 1) || 1);
+        const size = Number(decision.size || 0) || 0;
+        if (decision.url) {
+            return `${cnmcPrefix}.comments ${decision.url} ${page}${size > 0 ? ` -s ${Math.floor(size)}` : ''}`;
+        }
+        if (decision.query) {
+            const type = normalizeType(decision.type, 'mcmod');
+            return `${cnmcPrefix}.${type} --direct --comments${size > 0 ? ` -s ${Math.floor(size)}` : ''} ${decision.query}`;
+        }
+        return '';
+    }
+    if (decision.action !== 'search')
         return '';
     const platform = normalizePlatform(decision.platform);
     const type = normalizeType(decision.type, platform);
@@ -205,7 +265,8 @@ function buildCommand(decision, prefixes) {
         : platform === 'cf'
             ? ((prefixes === null || prefixes === void 0 ? void 0 : prefixes.cf) || 'cf')
             : ((prefixes === null || prefixes === void 0 ? void 0 : prefixes.mr) || 'mr');
-    return `${prefix}.${type} ${query}`;
+    const direct = decision.direct !== false ? '--direct ' : '';
+    return `${prefix}.${type} ${direct}${query}`;
 }
 function apply(ctx, config, shared = {}) {
     if (!(config === null || config === void 0 ? void 0 : config.enabled))

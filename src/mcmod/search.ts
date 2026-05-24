@@ -93,6 +93,11 @@ export async function fetchSearchFallback(query, typeKey) {
           title = cleanText($el.find('b').text()) || cleanText($el.text());
           summary = cleanText($el.find('i').text());
           link = `https://www.mcmod.cn/author/${id}.html`;
+        } else if (typeKey === 'pack') {
+          const rawText = cleanText($el.text());
+          title = rawText.replace(/^ID:\d+\s*/, '');
+          link = `https://www.mcmod.cn/modpack/${id}.html`;
+          summary = `ID: ${id}`;
         } else {
           const rawText = cleanText($el.text());
           title = rawText.replace(/^ID:\d+\s*/, '');
